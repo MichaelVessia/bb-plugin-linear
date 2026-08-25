@@ -316,9 +316,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
           "Team key such as ENG, or the team's full name when keys collide across workspaces. Defaults to this project's primary team.",
         ),
     }),
-    experimental_statusLabels: {
-      pending: "Reading the Linear team's setup",
-      completed: "Read the Linear team's setup",
+    presentation: {
+      label: {
+        pending: "Reading the Linear team's setup",
+        completed: "Read the Linear team's setup",
+      },
     },
     execute: ({ teamKey }, ctx) => {
       const current = scope(ctx.projectId);
@@ -389,9 +391,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
     parameters: z.object({
       issue: z.string().min(1).describe("An identifier such as ENG-42, or an issue id."),
     }),
-    experimental_statusLabels: {
-      pending: "Reading a Linear issue",
-      completed: "Read a Linear issue",
+    presentation: {
+      label: {
+        pending: "Reading a Linear issue",
+        completed: "Read a Linear issue",
+      },
     },
     execute: async ({ issue }, ctx) => {
       const current = scope(ctx.projectId);
@@ -566,9 +570,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       issue: z.string().min(1).describe("An identifier such as ENG-42, or an issue id."),
       body: z.string().min(1).describe("Markdown."),
     }),
-    experimental_statusLabels: {
-      pending: "Commenting on a Linear issue",
-      completed: "Commented on a Linear issue",
+    presentation: {
+      label: {
+        pending: "Commenting on a Linear issue",
+        completed: "Commented on a Linear issue",
+      },
     },
     execute: async ({ issue, body }, ctx) => {
       const current = scope(ctx.projectId);
@@ -614,9 +620,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       addLabelIds: z.array(z.string()).optional(),
       removeLabelIds: z.array(z.string()).optional(),
     }),
-    experimental_statusLabels: {
-      pending: "Updating a Linear issue",
-      completed: "Updated a Linear issue",
+    presentation: {
+      label: {
+        pending: "Updating a Linear issue",
+        completed: "Updated a Linear issue",
+      },
     },
     execute: async (params, ctx) => {
       const current = scope(ctx.projectId);
@@ -685,9 +693,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       parent: z.string().optional().describe("An identifier such as ENG-42 to file this under."),
       labelIds: z.array(z.string()).optional(),
     }),
-    experimental_statusLabels: {
-      pending: "Creating a Linear issue",
-      completed: "Created a Linear issue",
+    presentation: {
+      label: {
+        pending: "Creating a Linear issue",
+        completed: "Created a Linear issue",
+      },
     },
     execute: async (params, ctx) => {
       const current = scope(ctx.projectId);
@@ -729,9 +739,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
         .enum(["blocks", "related", "duplicate", "similar"])
         .describe("blocks means the first issue blocks the second."),
     }),
-    experimental_statusLabels: {
-      pending: "Relating two Linear issues",
-      completed: "Related two Linear issues",
+    presentation: {
+      label: {
+        pending: "Relating two Linear issues",
+        completed: "Related two Linear issues",
+      },
     },
     execute: async ({ issue, relatedIssue, type }, ctx) => {
       const current = scope(ctx.projectId);
@@ -761,9 +773,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       url: z.string().url(),
       title: z.string().optional(),
     }),
-    experimental_statusLabels: {
-      pending: "Attaching a link to a Linear issue",
-      completed: "Attached a link to a Linear issue",
+    presentation: {
+      label: {
+        pending: "Attaching a link to a Linear issue",
+        completed: "Attached a link to a Linear issue",
+      },
     },
     execute: async ({ issue, url, title }, ctx) => {
       const current = scope(ctx.projectId);
@@ -790,9 +804,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
     parameters: z.object({
       issue: z.string().min(1).describe("An identifier such as ENG-42, or an issue id."),
     }),
-    experimental_statusLabels: {
-      pending: "Starting a thread from a Linear issue",
-      completed: "Started a thread from a Linear issue",
+    presentation: {
+      label: {
+        pending: "Starting a thread from a Linear issue",
+        completed: "Started a thread from a Linear issue",
+      },
     },
     execute: async ({ issue }, ctx) => {
       const current = scope(ctx.projectId);
@@ -816,9 +832,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
     instructions:
       "Prefer linear_thread_issue over searching when the question is about 'the issue for this work' — the binding is authoritative and search is a guess.",
     parameters: z.object({}),
-    experimental_statusLabels: {
-      pending: "Reading this thread's Linear issue",
-      completed: "Read this thread's Linear issue",
+    presentation: {
+      label: {
+        pending: "Reading this thread's Linear issue",
+        completed: "Read this thread's Linear issue",
+      },
     },
     execute: (_input, ctx) => {
       if (ctx.threadId === null || ctx.threadId === undefined) {
@@ -839,9 +857,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
         .nullable()
         .describe("An identifier such as ENG-42, an issue id, or null to unbind."),
     }),
-    experimental_statusLabels: {
-      pending: "Binding this thread to a Linear issue",
-      completed: "Bound this thread to a Linear issue",
+    presentation: {
+      label: {
+        pending: "Binding this thread to a Linear issue",
+        completed: "Bound this thread to a Linear issue",
+      },
     },
     execute: async ({ issue }, ctx) => {
       if (ctx.threadId === null || ctx.threadId === undefined) {

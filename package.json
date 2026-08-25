@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-linear",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "license": "MIT",
   "description": "Linear inside bb — issues, inbox, triage, projects and cycles, with every thread knowing which issue it works on.",
@@ -10,7 +10,7 @@
   },
   "engines": {
     "bb": ">=0.37",
-    "bbPluginSdk": "^0.4.1"
+    "bbPluginSdk": "^0.4.16"
   },
   "bb": {
     "name": "Linear",
@@ -44,6 +44,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@get-bb/plugin-sdk": "^0.4.17",
     "@radix-ui/react-alert-dialog": "^1.1.23",
     "@radix-ui/react-context-menu": "^2.3.7",
     "@radix-ui/react-dialog": "^1.1.19",
