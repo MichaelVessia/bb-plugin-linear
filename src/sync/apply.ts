@@ -265,7 +265,7 @@ export function applyIssues(
   }
 
   const rows = nodes.map(toIssueInput);
-  store.putIssues(rows, at);
+  const written = store.putIssues(rows, at);
 
   for (const node of nodes) {
     if (node.previousIdentifiers.length > 0) {
@@ -282,7 +282,7 @@ export function applyIssues(
     if (oldest === null || row.updatedAt < oldest) oldest = row.updatedAt;
     if (newest === null || row.updatedAt > newest) newest = row.updatedAt;
   }
-  return { written: rows.length, oldestUpdatedAt: oldest, newestUpdatedAt: newest };
+  return { written, oldestUpdatedAt: oldest, newestUpdatedAt: newest };
 }
 
 /**

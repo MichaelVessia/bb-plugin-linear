@@ -4,7 +4,7 @@ import type { LinearClient } from "../linear/client.js";
 import type { TickResult } from "../linear/types.js";
 import type { Store } from "../store/store.js";
 import { applyIssues } from "./apply.js";
-import { BALANCED, nextInterval, type Cadence, type TierInput } from "./tiers.js";
+import { BALANCED, jitter, nextInterval, type Cadence, type TierInput } from "./tiers.js";
 import { DISCARDED_TICK, planTick, type TickOutcome } from "./tick.js";
 import { advanceWatermark } from "./watermark.js";
 import { parseInstant } from "../format.js";
@@ -195,24 +195,23 @@ function applyCommentPage(
   const attached = comments.filter(
     (comment) => comment.issueId !== "" && mirroredIssueIds.has(comment.issueId),
   );
-  deps.store.putComments(attached);
+  const written = deps.store.putComments(attached);
 
   let newest: number | null = null;
   for (const comment of attached) {
     if (newest === null || comment.updatedAt > newest) newest = comment.updatedAt;
   }
 
-  return { written: attached.length, newest };
+  return { written, newest };
 }
 
 /**
  * How long to wait, once the tier and the budget have both had their say.
  *
  * The tier decides urgency; the governor may only slow it down. Below 20 % of
- * the request budget it clamps to the Warm ceiling, below 5 % to Cold, and an
- * **unknown** budget clamps to Warm — which is the stated mitigation for the
- * one rate-limiting fact that could not be verified offline. If a header ever
- * disappears, the plugin gets slower, not louder.
+ * the request budget it clamps to the Warm ceiling, below 5 % to Cold, and
+ * an unknown budget leaves the tier alone because it is also the state before
+ * the first response after every plugin load.
  */
 export function cadenceFor(
   input: TierInput,
@@ -228,5 +227,5 @@ export function cadenceFor(
   });
   return governed === cadence.baseMs
     ? cadence
-    : { ...cadence, baseMs: governed, delayMs: governed };
+    : { ...cadence, baseMs: governed, delayMs: jitter(governed, random) };
 }

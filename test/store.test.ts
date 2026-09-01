@@ -13,6 +13,45 @@ describe("the migration list", () => {
   });
 });
 
+describe("mirror change counts", () => {
+  it("counts a new issue as changed", () => {
+    const store = createTestStore();
+    expect(store.putIssues([issue({ id: "1", updatedAt: NOW })], NOW)).toBe(1);
+  });
+
+  it("does not count an issue with the same updatedAt as changed", () => {
+    const store = createTestStore();
+    store.putIssues([issue({ id: "1", updatedAt: NOW })], NOW);
+    expect(store.putIssues([issue({ id: "1", updatedAt: NOW })], NOW + 1)).toBe(0);
+  });
+
+  it("counts an issue with a different updatedAt as changed", () => {
+    const store = createTestStore();
+    store.putIssues([issue({ id: "1", updatedAt: NOW })], NOW);
+    expect(store.putIssues([issue({ id: "1", updatedAt: NOW + 1 })], NOW + 1)).toBe(1);
+  });
+
+  it("reports genuine comment changes by updatedAt", () => {
+    const store = createTestStore();
+    store.putIssues([issue({ id: "1" })], NOW);
+    const comment = {
+      id: "c1",
+      issueId: "1",
+      userId: null,
+      parentId: null,
+      body: "hello",
+      url: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      editedAt: null,
+      resolvedAt: null,
+    };
+    expect(store.putComments([comment])).toBe(1);
+    expect(store.putComments([comment])).toBe(0);
+    expect(store.putComments([{ ...comment, updatedAt: NOW + 1 }])).toBe(1);
+  });
+});
+
 describe("full-text search", () => {
   it("finds an issue written through the store", () => {
     // `issue_fts` is external-content: the index holds no copy of the text and

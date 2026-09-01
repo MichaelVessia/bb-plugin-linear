@@ -259,9 +259,9 @@ data (they'd be a second source of truth and a leak surface).
 
 Webhooks: one `bb.http.route` with `auth: "none"` + Linear's HMAC signature
 verified inside the handler (reject unsigned/invalid before any parsing
-side effects). Registration is automatic when a public URL is available and
-verified by a round-trip; absent that, polling covers everything — webhooks
-are an upgrade, never a requirement.
+side effects). Registration is explicitly enabled with
+`bb linear webhook enable` and verified by a round-trip; absent that, polling
+covers everything — webhooks are an upgrade, never a requirement.
 
 ---
 
@@ -276,8 +276,9 @@ tested, and exercised live.
   (connection, identity, budget, webhook state — and nothing it cannot
   know, per D3).
 - **M2 Mirror + webhooks + polling.** Schema, append-only migrations, delta
-  sync for the working set, webhook route + verification + auto-registration
-  with polling fallback, realtime signals.
+  sync for the working set, webhook route + verification + explicit
+  `bb linear webhook enable` registration with polling fallback, realtime
+  signals.
 - **M3 Binding + header + side panel.** The ladder with provenance,
   suggestion UX, header chip, issue detail panel, live updates,
   `contributeInstructions` from cache.
@@ -310,3 +311,21 @@ rpc round-trips, service/schedule driving, tool calls, thread events);
 ladder, budgeter, delta merge, signature verification (fixtures, no
 network). Live loop via `bb plugin dev` against a real workspace. Smoke
 checklist maintained in `docs/smoke.md` from M2 on.
+
+---
+
+## 2026-09-01 — v0.2.0 freshness pass
+
+- Remote changes now promote the poller to Hot while a frontend is present.
+  Beat: “any observed change only resets decay,” which left active linear.app
+  edit sessions at two-to-ten-minute lag.
+- Verified webhook deliveries and local mutations wake the poller. Beat:
+  “webhook as publish-only latency hint,” which woke the UI but not its data.
+- An unknown budget is treated as healthy. Beat: “unknown clamps like Low,”
+  which made every plugin load feel stale before its first response arrived.
+- Mirror writes report genuine changes by entity `updatedAt`. Beat: “rows
+  returned equals rows changed,” which poisoned decay telemetry and would have
+  made the Hot window immortal through the watermark overlap.
+- `issue` and `threadIssue` RPC reads count as frontend liveness, with issue
+  detail also counting as panel visibility. Beat: “only the nav panel counts,”
+  which read an open thread as an absent user.

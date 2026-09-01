@@ -207,4 +207,19 @@ describe("resourceTypes", () => {
     // came from.
     expect(classify({ category: "assignments", type: "x" })).toBe("assigned");
   });
+
+  it("wakes the sync loop only after a webhook delivery claim is accepted", async () => {
+    const source = await import("node:fs").then((fs) =>
+      fs.readFileSync(new URL("../server.ts", import.meta.url), "utf8"),
+    );
+    const delivery = source.slice(
+      source.indexOf("const key = webhookDeliveryKey(body)"),
+      source.indexOf(
+        'publish("linear:data")',
+        source.indexOf("const key = webhookDeliveryKey(body)"),
+      ),
+    );
+    expect(delivery.indexOf("claimDelivery")).toBeLessThan(delivery.indexOf("syncWake.wake()"));
+    expect(delivery).toContain("syncWake.wake()");
+  });
 });

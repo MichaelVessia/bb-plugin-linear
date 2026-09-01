@@ -181,7 +181,7 @@ export async function backfillTeams(
   if (truncated) {
     deps.log?.(
       "info",
-      `Stopped after ${issues} open issues. The rest arrive as they are updated.`,
+      `Stopped after ${seen.size} open issues. The rest arrive as they are updated.`,
     );
   }
 

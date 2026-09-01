@@ -231,7 +231,8 @@ export interface Store {
   replacePriorityValues(values: readonly PriorityValueRow[], workspaceId?: string): void;
   priorityValues(teamIds?: readonly string[]): PriorityValueRow[];
 
-  putIssues(issues: readonly IssueInput[], at: number): void;
+  /** Upsert issues and report how many are new or carry a different Linear version. */
+  putIssues(issues: readonly IssueInput[], at: number): number;
   issue(id: string): IssueRow | null;
   /** Batch lookup for hot projections. One inbox page must not become one
    * SQLite statement per notification. */
@@ -251,7 +252,8 @@ export interface Store {
    *  SQLite for a fraction almost nobody reads. */
   subIssueProgress(parentIds: readonly string[]): Map<string, { done: number; total: number }>;
 
-  putComments(comments: readonly CommentRow[]): void;
+  /** Upsert comments and report how many are new or carry a different Linear version. */
+  putComments(comments: readonly CommentRow[]): number;
   comments(issueId: string): CommentRow[];
 
   /**
@@ -411,14 +413,21 @@ export function createStore(db: Database): Store {
   // `ON CONFLICT DO UPDATE` rather than `INSERT OR REPLACE`, so the row keeps
   // its rowid. The FTS5 index is keyed on rowid, and a replace would leave the
   // old entry orphaned behind a rowid nothing points at any more.
+  const issueUpdatedAtStatement = db.prepare(
+    `SELECT updated_at AS updatedAt FROM issue WHERE id = ?`,
+  );
   const putIssuesTx = db.transaction((issues: readonly IssueInput[], at: number) => {
+    let changed = 0;
     for (const issue of issues) {
+      const existing = issueUpdatedAtStatement.get(issue.id) as { updatedAt: number } | undefined;
+      if (existing === undefined || existing.updatedAt !== issue.updatedAt) changed += 1;
       putIssueStatement.run({
         ...issue,
         labelIds: JSON.stringify(issue.labelIds),
         syncedAt: at,
       });
     }
+    return changed;
   });
 
   function buildIssueWhere(filter: IssueFilter): { sql: string; params: unknown[] } {
@@ -1077,7 +1086,7 @@ export function createStore(db: Database): Store {
     /* ── Issues ──────────────────────────────────────────────────────────── */
 
     putIssues(issues, at) {
-      putIssuesTx(issues, at);
+      return putIssuesTx(issues, at);
     },
 
     issue(id) {
@@ -1230,6 +1239,9 @@ export function createStore(db: Database): Store {
     /* ── Bindings ────────────────────────────────────────────────────────── */
 
     putComments(comments) {
+      const updatedAtStatement = db.prepare(
+        `SELECT updated_at AS updatedAt FROM comment WHERE id = ?`,
+      );
       const statement = db.prepare(
         `INSERT INTO comment (id, issue_id, user_id, parent_id, body, url,
                               created_at, updated_at, edited_at, resolved_at)
@@ -1242,8 +1254,16 @@ export function createStore(db: Database): Store {
            updated_at = excluded.updated_at, edited_at = excluded.edited_at,
            resolved_at = excluded.resolved_at`,
       );
-      db.transaction(() => {
-        for (const comment of comments) statement.run(comment);
+      return db.transaction(() => {
+        let changed = 0;
+        for (const comment of comments) {
+          const existing = updatedAtStatement.get(comment.id) as
+            | { updatedAt: number }
+            | undefined;
+          if (existing === undefined || existing.updatedAt !== comment.updatedAt) changed += 1;
+          statement.run(comment);
+        }
+        return changed;
       })();
     },
 

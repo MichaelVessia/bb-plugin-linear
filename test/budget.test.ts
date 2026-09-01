@@ -7,6 +7,8 @@ import {
   parseResetAt,
   type BudgetSnapshot,
 } from "../src/linear/budget.js";
+import { cadenceFor } from "../src/sync/service.js";
+import type { TierInput } from "../src/sync/tiers.js";
 
 const NOW = 1_700_000_000_000;
 
@@ -76,9 +78,8 @@ describe("parseBudgetHeaders", () => {
   });
 
   it("returns null for a response that carried none, and never throws on an unfamiliar set", () => {
-    // The stated mitigation for the one rate-limiting fact that could not be
-    // verified offline: a missing header means "unknown budget", which the
-    // governor reads as the conservative cadence.
+    // A missing header means "unknown budget"; startup keeps the tier cadence
+    // until a real response supplies pressure data.
     expect(parseBudgetHeaders(headers({}), NOW)).toBeNull();
     expect(parseBudgetHeaders(headers({ "X-Some-Future-Header": "yes" }), NOW)).toBeNull();
     expect(() => parseBudgetHeaders(headers({ "X-RateLimit-Requests-Limit": "" }), NOW)).not.toThrow();
@@ -120,13 +121,48 @@ describe("governBackgroundInterval", () => {
     expect(governBackgroundInterval(900_000, "low", ceilings)).toBe(900_000);
   });
 
-  it("clamps an unknown budget to Warm rather than assuming headroom", () => {
-    expect(governBackgroundInterval(10_000, "unknown", ceilings)).toBe(120_000);
+  it("leaves an unknown budget un-clamped during startup", () => {
+    expect(governBackgroundInterval(10_000, "unknown", ceilings)).toBe(10_000);
   });
 
   it("clamps to Warm at low and Cold at critical", () => {
     expect(governBackgroundInterval(10_000, "low", ceilings)).toBe(120_000);
     expect(governBackgroundInterval(10_000, "critical", ceilings)).toBe(600_000);
+  });
+});
+
+describe("cadenceFor", () => {
+  const hot: TierInput = {
+    now: NOW,
+    runningLinkedThread: true,
+    lastMutationAt: null,
+    lastPanelReadAt: null,
+    lastFrontendReadAt: null,
+    hasBinding: true,
+    lastChangeAt: null,
+    quietTicks: 0,
+  };
+
+  it("leaves Hot at ten seconds when the budget is unknown", () => {
+    expect(cadenceFor(hot, "balanced", null, () => "unknown", () => 0.5)).toEqual({
+      tier: "hot",
+      baseMs: 10_000,
+      delayMs: 10_000,
+    });
+  });
+
+  it("clamps Hot to Warm when the budget is low", () => {
+    const cadence = cadenceFor(hot, "balanced", snapshot(), () => "low", () => 0.5);
+    expect(cadence.baseMs).toBe(120_000);
+    expect(cadence.delayMs).toBe(120_000);
+  });
+
+  it("preserves tier jitter when the cadence is not clamped", () => {
+    expect(cadenceFor(hot, "balanced", null, () => "unknown", () => 0).delayMs).toBe(9_000);
+  });
+
+  it("jitters the governed base when the cadence is clamped", () => {
+    expect(cadenceFor(hot, "balanced", snapshot(), () => "low", () => 0).delayMs).toBe(108_000);
   });
 });
 

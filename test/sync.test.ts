@@ -5,6 +5,7 @@ import {
   inboxInterval,
   jitter,
   nextInterval,
+  REMOTE_HOT_WINDOW_MS,
   type TierInput,
 } from "../src/sync/tiers.js";
 import { advanceWatermark, sinceFor, WATERMARK_OVERLAP_MS } from "../src/sync/watermark.js";
@@ -26,7 +27,7 @@ function tier(overrides: Partial<TierInput> = {}): TierInput {
     lastPanelReadAt: null,
     lastFrontendReadAt: null,
     hasBinding: true,
-    lastChangeAt: NOW,
+    lastChangeAt: null,
     quietTicks: 0,
     ...overrides,
   };
@@ -43,7 +44,7 @@ describe("currentTier", () => {
     expect(currentTier(tier({ runningLinkedThread: true }))).toBe("hot");
   });
 
-  it("stays hot for two minutes after a local write", () => {
+  it("stays hot for two minutes after a local write even with no frontend", () => {
     // Long enough to catch the server-side automations a write can trigger,
     // short enough not to pin the tier to a click somebody walked away from.
     expect(currentTier(tier({ lastMutationAt: NOW - 60_000 }))).toBe("hot");
@@ -52,6 +53,28 @@ describe("currentTier", () => {
 
   it("is cold when no frontend has asked for anything in five minutes", () => {
     expect(currentTier(tier({ lastFrontendReadAt: NOW - 600_000 }))).toBe("cold");
+  });
+
+  it("is hot after a remote change while a frontend is present", () => {
+    expect(
+      currentTier(tier({ lastFrontendReadAt: NOW, lastChangeAt: NOW - 1_000 })),
+    ).toBe("hot");
+  });
+
+  it("is cold after a remote change when no frontend is present", () => {
+    expect(currentTier(tier({ lastChangeAt: NOW - 1_000 }))).toBe("cold");
+  });
+
+  it("falls back to foreground or warm after the remote hot window expires", () => {
+    const expired = NOW - REMOTE_HOT_WINDOW_MS;
+    expect(
+      currentTier(tier({ lastFrontendReadAt: NOW, lastPanelReadAt: NOW, lastChangeAt: expired })),
+    ).toBe("foreground");
+    expect(
+      currentTier(
+        tier({ lastFrontendReadAt: NOW, lastPanelReadAt: NOW - 120_000, lastChangeAt: expired }),
+      ),
+    ).toBe("warm");
   });
 
   it("is foreground while the panel is reading and warm when it stops", () => {
@@ -311,6 +334,31 @@ describe("runTick", () => {
     expect(outcome.issuesWatermark).toBe(
       Date.parse("2026-08-12T12:00:00.000Z") - WATERMARK_OVERLAP_MS,
     );
+  });
+
+  it("does not report watermark-overlap rows with the same updatedAt as changed", async () => {
+    const store = createTestStore();
+    const result = {
+      issues: {
+        nodes: [issueNode({ id: "i_1", updatedAt: "2026-08-12T12:00:00.000Z" })],
+        pageInfo: { hasNextPage: false },
+      },
+      comments: EMPTY_PAGE,
+    } as TickResult;
+    const client = tickClient(result);
+    const input = {
+      teamIds: ["team_eng"],
+      issuesWatermark: 1,
+      commentsWatermark: 1,
+      tickNumber: 0,
+    };
+
+    const first = await runTick({ client, store, now: () => NOW }, input);
+    const overlap = await runTick({ client, store, now: () => NOW }, input);
+
+    expect(first.changed).toBe(true);
+    expect(overlap.changed).toBe(false);
+    expect(overlap.issuesWritten).toBe(0);
   });
 
   it("discards a partial tick rather than committing a hollow snapshot", async () => {

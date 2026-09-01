@@ -56,6 +56,12 @@ const PROFILE_MULTIPLIER: Record<SyncProfile, number> = {
  *  click somebody made and walked away from. */
 export const MUTATION_HOT_WINDOW_MS = 120_000;
 
+/** A genuine remote change keeps a present frontend hot for two minutes.
+ * Sustained Hot is 360 requests/hour of a 2,500/hour key budget, and this
+ * window only sustains while ticks keep observing real changes and somebody
+ * is present to see them. */
+export const REMOTE_HOT_WINDOW_MS = 120_000;
+
 /** Half an hour of nothing changing means nothing is happening, whatever the
  *  panel is doing. */
 export const QUIET_TO_COLD_MS = 1_800_000;
@@ -97,6 +103,10 @@ export function currentTier(input: TierInput): Tier {
   const frontendHere =
     input.lastFrontendReadAt !== null && input.now - input.lastFrontendReadAt < FRONTEND_WINDOW_MS;
   if (!frontendHere) return "cold";
+
+  const changedRecently =
+    input.lastChangeAt !== null && input.now - input.lastChangeAt < REMOTE_HOT_WINDOW_MS;
+  if (changedRecently) return "hot";
 
   // Half an hour with nothing changing is cold even with the panel open: the
   // panel being on a second monitor is not a reason to keep asking.

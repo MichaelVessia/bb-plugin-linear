@@ -96,6 +96,7 @@ import {
 } from "./src/sync/backfill.js";
 import { cadenceFor, runTick } from "./src/sync/service.js";
 import { inboxInterval } from "./src/sync/tiers.js";
+import { createWake } from "./src/sync/wake.js";
 import { classify, deliveryKey, shouldSend } from "./src/notify/classify.js";
 import { RESOURCE_TYPES, verifyWebhook, webhookDeliveryKey, webhookEnvelope } from "./src/webhook.js";
 import {
@@ -175,6 +176,8 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         bb.log[level](redact(message));
       },
     });
+    // A wake can shorten Cold or Warm, but wake never out-polls Hot.
+    const syncWake = createWake(10_000);
 
     const database = bb.storage.database();
     bb.storage.migrate(database, MIGRATIONS);
@@ -1147,6 +1150,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         // team.
         lastMutationAt = now();
         lastChangeAt = now();
+        syncWake.wake();
         publish("linear:data");
       },
       signal: lifetime.signal,
@@ -1208,7 +1212,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
     }
 
     /**
-     * Detail asks already being fetched, or recently fetched and found empty.
+     * Detail asks already being fetched, or refreshed in the last 30 seconds.
      *
      * The map is what lets `detailFor` answer instantly: an issue the mirror
      * does not hold gets a **detached** fetch and an immediate `loading`,
@@ -1221,41 +1225,61 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
      */
     const detailFetches = new Map<string, { at: number; done: boolean }>();
     const DETAIL_FETCH_TTL_MS = 30_000;
+    const DETAIL_FETCH_LIMIT = 512;
+
+    function pruneDetailFetches(): void {
+      for (const [key, entry] of detailFetches) {
+        if (entry.done && now() - entry.at >= DETAIL_FETCH_TTL_MS) detailFetches.delete(key);
+      }
+      while (detailFetches.size > DETAIL_FETCH_LIMIT) {
+        const oldest = detailFetches.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        detailFetches.delete(oldest);
+      }
+    }
+
+    function refreshDetailInBackground(
+      key: string,
+      readTeamIds: readonly string[],
+      publishWhenMissing: boolean,
+    ): void {
+      if (detailFetches.has(key)) return;
+      pruneDetailFetches();
+      detailFetches.set(key, { at: now(), done: false });
+      pruneDetailFetches();
+      lifetime.detach("issue-refresh", async () => {
+        let found = false;
+        try {
+          found = (await refreshIssue(key, readTeamIds)) !== null;
+        } catch (error) {
+          if (lifetime.disposed) return;
+          // An unreachable Linear already warned once, from the breaker.
+          lifetime.log(
+            isLinearError(error) ? "debug" : "warn",
+            `issue ${key}: ${describeError(error)}`,
+          );
+        } finally {
+          if (!lifetime.disposed) {
+            detailFetches.delete(key);
+            detailFetches.set(key, { at: now(), done: true });
+            // A found issue publishes from `refreshIssue`; an absent issue
+            // publishes here so a loading surface converges to `missing`.
+            if (!found && publishWhenMissing) publish("linear:data");
+          }
+        }
+      });
+    }
 
     async function detailFor(id: string): Promise<DetailResult> {
       const issue = store.issue(id) ?? store.issueByIdentifier(id);
       const readable = store.boundTeamIds();
+      pruneDetailFetches();
       if (issue === null) {
-        for (const [key, entry] of detailFetches) {
-          if (entry.done && now() - entry.at >= DETAIL_FETCH_TTL_MS) detailFetches.delete(key);
-        }
         const attempt = detailFetches.get(id);
         if (attempt !== undefined && attempt.done) {
           return { kind: "missing", identifier: id };
         }
-        if (attempt === undefined) {
-          detailFetches.set(id, { at: now(), done: false });
-          lifetime.detach("issue-refresh", async () => {
-            try {
-              await refreshIssue(id, readable);
-            } catch (error) {
-              if (lifetime.disposed) return;
-              // An unreachable Linear already warned once, from the breaker.
-              lifetime.log(
-                isLinearError(error) ? "debug" : "warn",
-                `issue ${id}: ${describeError(error)}`,
-              );
-            } finally {
-              if (!lifetime.disposed) {
-                detailFetches.set(id, { at: now(), done: true });
-                // The found case publishes from `refreshIssue`; the empty case
-                // publishes here so a surface showing `loading` re-asks and
-                // gets its honest `missing`.
-                publish("linear:data");
-              }
-            }
-          });
-        }
+        refreshDetailInBackground(id, readable, true);
         return { kind: "loading" };
       }
 
@@ -1277,6 +1301,11 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           }),
         };
       }
+
+      // Return the mirror immediately, then refresh at most once per issue per
+      // 30 seconds. The publish from `refreshIssue` makes this surface re-read;
+      // the cooldown prevents that publish from becoming a refresh loop.
+      refreshDetailInBackground(issue.id, readable, false);
 
       const team = store.team(issue.teamId);
       const children = store.childIssues(issue.id, 100);
@@ -1594,7 +1623,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           // streak: 1×, 2×, 4×, 8×, capped so recovery is noticed within the
           // ceiling even when the cadence itself has decayed long.
           const backoff = Math.min(2 ** failStreak, 8);
-          await sleep(
+          await syncWake.wait(
             Math.min(
               cadence.delayMs * backoff,
               Math.max(cadence.delayMs, TICK_BACKOFF_CEILING_MS),
@@ -1751,6 +1780,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           // the poller something changed, and the poller is what reads it.
           // That keeps one apply path rather than two.
           lastChangeAt = now();
+          syncWake.wake();
           publish("linear:data");
         });
 
@@ -2761,6 +2791,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       },
 
       async threadIssue({ threadId }) {
+        lastFrontendReadAt = now();
         const link = store.threadLink(threadId);
         if (link !== null) {
           const issue = store.issue(link.issueId);
@@ -2804,6 +2835,8 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       },
 
       async issue({ id }) {
+        lastFrontendReadAt = now();
+        lastPanelReadAt = now();
         return { result: await detailFor(id) };
       },
 

@@ -179,10 +179,9 @@ export interface CadenceCeilings {
  * calculation already decided how urgent this poll is, and the governor's only
  * authority is to slow it down.
  *
- * The `unknown` case clamps to Warm rather than trusting the tier. That is the
- * mitigation for the one thing about rate limiting that could not be verified
- * offline: if a header ever disappears or changes name, the plugin gets slower,
- * not louder.
+ * Unknown means no response has been parsed yet, including the first tick after
+ * every plugin load. Punishing that startup state with a two-minute clamp is
+ * exactly when the user is most likely to be looking, so it is treated as healthy.
  */
 export function governBackgroundInterval(
   base: number,
@@ -193,8 +192,8 @@ export function governBackgroundInterval(
     case "critical":
       return Math.max(base, ceilings.cold);
     case "low":
-    case "unknown":
       return Math.max(base, ceilings.warm);
+    case "unknown":
     case "healthy":
       return base;
   }
