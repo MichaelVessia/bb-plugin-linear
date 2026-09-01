@@ -201,3 +201,10 @@ write-back automations stay off by default so the two never fight.
 
 MIT. Built in the open; the [BRIEF](./BRIEF.md) records every decision with
 the alternative it beat.
+
+---
+
+## More bb plugins
+
+This is one of eight bb plugins I publish — see them all at
+[**vburojevic/bb-plugins**](https://github.com/vburojevic/bb-plugins).
