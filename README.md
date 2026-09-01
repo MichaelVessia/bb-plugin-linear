@@ -199,7 +199,8 @@ a pull request merges at 2am — and an MCP-only integration is invisible to
 every other provider bb runs. Where your agents *do* have Linear MCP, the
 write-back automations stay off by default so the two never fight.
 
-MIT. Built in the open; the [BRIEF](./BRIEF.md) records every decision with
+MIT — see [LICENSE](LICENSE), and [NOTICE](NOTICE.md) for the Linear trademark
+notice. Built in the open; the [BRIEF](./BRIEF.md) records every decision with
 the alternative it beat.
 
 ---
