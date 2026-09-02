@@ -215,7 +215,12 @@ describe("planRegistration", () => {
   it("creates one webhook per bound team", () => {
     // WebhookCreateInput.teamId is singular and WebhookUpdateInput cannot
     // change team scope at all.
-    const plan = planRegistration(["t1", "t2"], new Map(), "https://h.example.test/");
+    const plan = planRegistration(
+      ["t1", "t2"],
+      new Map(),
+      "https://h.example.test/",
+      ["Issue", "Reaction"],
+    );
     expect(plan.create).toEqual(["t1", "t2"]);
     expect(plan.deleteIds).toEqual([]);
   });
@@ -223,8 +228,12 @@ describe("planRegistration", () => {
   it("replaces a webhook whose URL changed, because scope cannot be updated", () => {
     const plan = planRegistration(
       ["t1"],
-      new Map([["t1", { id: "w1", url: "https://old.example.test/" }]]),
+      new Map([[
+        "t1",
+        { id: "w1", url: "https://old.example.test/", resourceTypes: ["Issue", "Reaction"] },
+      ]]),
       "https://new.example.test/",
+      ["Issue", "Reaction"],
     );
     expect(plan.create).toEqual(["t1"]);
     expect(plan.deleteIds).toEqual([{ id: "w1", teamId: "t1" }]);
@@ -233,10 +242,54 @@ describe("planRegistration", () => {
   it("leaves an unchanged registration alone", () => {
     const plan = planRegistration(
       ["t1"],
-      new Map([["t1", { id: "w1", url: "https://h.example.test/" }]]),
+      new Map([[
+        "t1",
+        { id: "w1", url: "https://h.example.test/", resourceTypes: ["Reaction", "Issue"] },
+      ]]),
       "https://h.example.test/",
+      ["Issue", "Reaction"],
     );
     expect(plan).toEqual({ create: [], deleteIds: [], keep: ["t1"] });
+  });
+
+  it("replaces an unchanged-url registration whose resource set is stale", () => {
+    const plan = planRegistration(
+      ["t1"],
+      new Map([[
+        "t1",
+        { id: "w1", url: "https://h.example.test/", resourceTypes: ["Issue"] },
+      ]]),
+      "https://h.example.test/",
+      ["Issue", "Reaction"],
+    );
+    expect(plan.create).toEqual(["t1"]);
+    expect(plan.deleteIds).toEqual([{ id: "w1", teamId: "t1" }]);
+    expect(plan.keep).toEqual([]);
+  });
+
+  it("treats a duplicated stored resource as a stale set", () => {
+    const plan = planRegistration(
+      ["t1"],
+      new Map([[
+        "t1",
+        { id: "w1", url: "https://h.example.test/", resourceTypes: ["Issue", "Issue"] },
+      ]]),
+      "https://h.example.test/",
+      ["Issue", "Reaction"],
+    );
+    expect(plan.create).toEqual(["t1"]);
+    expect(plan.deleteIds).toEqual([{ id: "w1", teamId: "t1" }]);
+  });
+
+  it("replaces legacy registrations that did not record their resource set", () => {
+    const plan = planRegistration(
+      ["t1"],
+      new Map([["t1", { id: "w1", url: "https://h.example.test/" }]]),
+      "https://h.example.test/",
+      ["Issue", "Reaction"],
+    );
+    expect(plan.create).toEqual(["t1"]);
+    expect(plan.deleteIds).toEqual([{ id: "w1", teamId: "t1" }]);
   });
 
   it("deletes the webhook for a team that is no longer bound", () => {
@@ -245,10 +298,11 @@ describe("planRegistration", () => {
     const plan = planRegistration(
       ["t1"],
       new Map([
-        ["t1", { id: "w1", url: "https://h.example.test/" }],
-        ["t2", { id: "w2", url: "https://h.example.test/" }],
+        ["t1", { id: "w1", url: "https://h.example.test/", resourceTypes: ["Issue"] }],
+        ["t2", { id: "w2", url: "https://h.example.test/", resourceTypes: ["Issue"] }],
       ]),
       "https://h.example.test/",
+      ["Issue"],
     );
     expect(plan.deleteIds).toEqual([{ id: "w2", teamId: "t2" }]);
     expect(plan.create).toEqual([]);

@@ -166,12 +166,28 @@ describe("forgetWorkspace removes everything the workspace owned", () => {
     store.setBinding("proj_company", "team_c_eng", "primary", NOW);
     store.linkThread({ threadId: "th_c", issueId: "ic", teamId: "team_c_eng", projectId: "proj_company", createdAt: NOW, origin: "manual" });
     store.putInbox([{ key: "n_c", workspaceId: "ws_company", kind: "assigned", issueId: "ic", teamId: "team_c_eng", actorId: null, title: "assigned", body: null, url: null, createdAt: NOW, seenAt: null, dismissedAt: null, linearReadAt: null }]);
+    store.replaceAttachments("ic", [{ id: "ac", issueId: "ic", title: "secret", subtitle: null, url: "https://example.invalid/a", sourceType: null, groupBySource: false, createdAt: NOW, updatedAt: NOW, creatorId: null }]);
+    store.putHistory([{ id: "hc:state", issueId: "ic", createdAt: NOW, actorId: null, botName: null, kind: "state", payload: { to: "done" } }]);
+    store.replaceReactions("ic", [{ id: "rc", issueId: "ic", commentId: "cc", emoji: "eyes", userId: null, createdAt: NOW }]);
+    store.replaceSubscribers("ic", ["u_c"]);
+    store.replaceDocuments("ic", [{ id: "dc", issueId: "ic", title: "secret", url: "https://example.invalid/d", updatedAt: NOW, icon: null, color: null }]);
+    store.replaceCustomerNeeds("ic", [{ id: "nc", issueId: "ic", customerName: "Customer", priority: 1, body: "secret", url: "https://example.invalid/n", createdAt: NOW }]);
+    store.putActivityCursor({ issueId: "ic", commentsCursor: "c", commentsMore: true, historyCursor: "h", historyMore: true, direction: "before" });
+    store.mergeRelations([{ id: "relc", issueId: "ip", relatedIssueId: "ic", type: "related" }]);
 
     store.forgetWorkspace("ws_company");
 
     // The company's DATA is gone — the staleness and retention win.
     expect(store.issue("ic")).toBeNull();
     expect(store.comments("ic")).toEqual([]);
+    expect(store.attachmentsFor("ic")).toEqual([]);
+    expect(store.historyFor("ic")).toEqual([]);
+    expect(store.reactionsFor("ic")).toEqual([]);
+    expect(store.subscribersFor("ic")).toEqual([]);
+    expect(store.documentsFor("ic")).toEqual([]);
+    expect(store.customerNeedsFor("ic")).toEqual([]);
+    expect(store.activityCursor("ic")).toBeNull();
+    expect(store.relationsFor("ic")).toEqual([]);
     expect(store.team("team_c_eng")).toBeNull();
     expect(store.inbox({ limit: 10 }).some((row) => row.key === "n_c")).toBe(false);
     // And it stops driving sync, which is what the cascade is really for.

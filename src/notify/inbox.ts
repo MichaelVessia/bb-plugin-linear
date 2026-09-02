@@ -16,6 +16,7 @@ export interface InboxRow {
   readonly workspaceId: string;
   readonly kind: NotificationKind;
   readonly issueId: string | null;
+  readonly commentId: string | null;
   readonly teamId: string | null;
   readonly actorId: string | null;
   readonly title: string;
@@ -42,6 +43,7 @@ export function toInboxRow(
     workspaceId,
     kind,
     issueId: node.issueId ?? node.issue?.id ?? null,
+    commentId: node.commentId ?? null,
     teamId: node.team?.id ?? null,
     actorId: node.actor?.id ?? null,
     title: node.title,

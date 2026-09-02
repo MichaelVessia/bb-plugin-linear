@@ -6,6 +6,7 @@ import {
   signPayload,
   verifyWebhook,
   webhookDeliveryKey,
+  webhookIssueRefreshId,
   type VerifyContext,
 } from "../src/webhook.js";
 import { classify } from "../src/notify/classify.js";
@@ -189,7 +190,44 @@ describe("resourceTypes", () => {
       "IssueAttachment",
       "IssueLabel",
       "Project",
+      "Reaction",
     ]);
+  });
+
+  it("extracts only targeted detail refresh keys from supported webhook types", () => {
+    const base = {
+      action: "update",
+      organizationId: "org_1",
+      webhookId: "wh_1",
+      webhookTimestamp: NOW,
+    };
+    expect(
+      webhookIssueRefreshId({ ...base, type: "Reaction", data: { issueId: "i1" } }),
+    ).toBe("i1");
+    expect(
+      webhookIssueRefreshId({ ...base, type: "Comment", data: { issue: { id: "i2" } } }),
+    ).toBe("i2");
+    expect(
+      webhookIssueRefreshId({ ...base, type: "IssueAttachment", data: { issueId: "i3" } }),
+    ).toBe("i3");
+    expect(
+      webhookIssueRefreshId({ ...base, type: "Issue", data: { issueId: "i4" } }),
+    ).toBeNull();
+    expect(
+      webhookIssueRefreshId({ ...base, type: "Reaction", data: { issueId: 42 } }),
+    ).toBeNull();
+    expect(
+      webhookIssueRefreshId(
+        { ...base, type: "Reaction", data: { commentId: "c1" } },
+        (commentId) => (commentId === "c1" ? "i5" : null),
+      ),
+    ).toBe("i5");
+    expect(
+      webhookIssueRefreshId(
+        { ...base, type: "Reaction", data: { commentId: 42 } },
+        () => "must-not-resolve",
+      ),
+    ).toBeNull();
   });
 
   it("never asks for allPublicTeams", async () => {
@@ -221,5 +259,22 @@ describe("resourceTypes", () => {
     );
     expect(delivery.indexOf("claimDelivery")).toBeLessThan(delivery.indexOf("syncWake.wake()"));
     expect(delivery).toContain("syncWake.wake()");
+    expect(delivery.indexOf("claimDelivery")).toBeLessThan(
+      delivery.indexOf("refreshDetailInBackground"),
+    );
+    expect(delivery).toContain("store.commentIssueId(commentId)");
+    expect(delivery).toContain("[webhookTeamId]");
+    expect(delivery).toContain('false, "background"');
+  });
+
+  it("expires the targeted-detail cooldown before testing whether a refresh is active", async () => {
+    const source = await import("node:fs").then((fs) =>
+      fs.readFileSync(new URL("../server.ts", import.meta.url), "utf8"),
+    );
+    const start = source.indexOf("function refreshDetailInBackground");
+    const refresh = source.slice(start, source.indexOf('lifetime.detach("issue-refresh"', start));
+    expect(refresh.indexOf("pruneDetailFetches()")).toBeLessThan(
+      refresh.indexOf("detailFetches.has(key)"),
+    );
   });
 });

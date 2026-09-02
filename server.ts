@@ -109,7 +109,13 @@ import { cadenceFor, runTick } from "./src/sync/service.js";
 import { inboxInterval } from "./src/sync/tiers.js";
 import { createWake } from "./src/sync/wake.js";
 import { classify, deliveryKey, shouldSend } from "./src/notify/classify.js";
-import { RESOURCE_TYPES, verifyWebhook, webhookDeliveryKey, webhookEnvelope } from "./src/webhook.js";
+import {
+  RESOURCE_TYPES,
+  verifyWebhook,
+  webhookDeliveryKey,
+  webhookEnvelope,
+  webhookIssueRefreshId,
+} from "./src/webhook.js";
 import {
   checkWebhookUrl,
   describeDemotion,
@@ -169,7 +175,12 @@ const writeRefusalRecordSchema = z.object({
 });
 
 const installWatermarkSchema = z.object({ v: z.literal(1), at: z.number() });
-const webhookRecordSchema = z.object({ v: z.literal(1), id: z.string(), url: z.string() });
+const webhookRecordSchema = z.object({
+  v: z.literal(1),
+  id: z.string(),
+  url: z.string(),
+  resourceTypes: z.array(z.string()).optional(),
+});
 
 /** Legacy installs used one secret for every workspace. It is accepted only as
  * a migration marker and cleared after secure per-team registration. */
@@ -1194,6 +1205,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       idOrIdentifier: string,
       readTeamIds: readonly string[],
       signal?: AbortSignal,
+      initiator: "background" | "user" = "user",
     ) {
       // Resolve only through credentials represented by the caller's read
       // scope, and check the returned team before anything reaches the mirror.
@@ -1202,7 +1214,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         [...teamsBySlot(readTeamIds)].map(async ([slot]): Promise<IssueDetailNode | null> => {
           try {
             const result = await clientForSlot(slot).issueDetail(idOrIdentifier, {
-              initiator: "user",
+              initiator,
               ...(signal ? { signal } : {}),
             });
             return permitted.has(result.issue.team.id) ? result.issue : null;
@@ -1263,15 +1275,16 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       key: string,
       readTeamIds: readonly string[],
       publishWhenMissing: boolean,
+      initiator: "background" | "user" = "user",
     ): void {
-      if (detailFetches.has(key)) return;
       pruneDetailFetches();
+      if (detailFetches.has(key)) return;
       detailFetches.set(key, { at: now(), done: false });
       pruneDetailFetches();
       lifetime.detach("issue-refresh", async () => {
         let found = false;
         try {
-          found = (await refreshIssue(key, readTeamIds)) !== null;
+          found = (await refreshIssue(key, readTeamIds, undefined, initiator)) !== null;
         } catch (error) {
           if (lifetime.disposed) return;
           // An unreachable Linear already warned once, from the breaker.
@@ -1734,12 +1747,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         let organizationId: string | null = null;
         let knownWebhookIds = new Set<string>();
         let boundTeamIds = new Set<string>();
+        let webhookTeamId: string | null = null;
         if (envelope.type === "SelfTest" && envelope.nonce !== null) {
           secret = pendingSelfTests.get(envelope.nonce) ?? null;
         } else if (envelope.webhookId !== null) {
           const target = [...webhookIds].find((entry) => entry[1] === envelope.webhookId);
           if (target !== undefined) {
             const [teamId, webhookId] = target;
+            webhookTeamId = teamId;
             secret = store.localSecret(webhookSecretKey(teamId));
             organizationId = store.workspaceForTeam(teamId)?.id ?? null;
             knownWebhookIds = new Set([webhookId]);
@@ -1796,6 +1811,16 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           const key = webhookDeliveryKey(body);
           if (!store.claimDelivery(key, `webhook:${body.type}`, now())) return;
           store.markDelivered(key, now());
+
+          // Payload data is only a refresh key. The detail query re-checks
+          // team scope and is the sole source of rows; the webhook never
+          // writes attacker-controlled entity fields into the mirror.
+          const refreshId = webhookIssueRefreshId(body, (commentId) =>
+            store.commentIssueId(commentId),
+          );
+          if (refreshId !== null && webhookTeamId !== null) {
+            refreshDetailInBackground(refreshId, [webhookTeamId], false, "background");
+          }
 
           // A webhook is a *latency improvement*, not a replacement: it tells
           // the poller something changed, and the poller is what reads it.
@@ -1942,7 +1967,10 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         };
       }
 
-      const existing = new Map<string, { id: string; url: string }>();
+      const existing = new Map<
+        string,
+        { id: string; url: string; resourceTypes?: readonly string[] }
+      >();
       for (const key of await kv.keys("webhook:")) {
         const record = await kv.readOptional(key, webhookRecordSchema);
         if (record !== undefined) {
@@ -1953,11 +1981,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             // A legacy shared-secret record is deliberately forced through
             // delete-and-create on the next explicit enable.
             url: hasIsolatedSecret ? record.url : `legacy:${record.url}`,
+            ...(record.resourceTypes === undefined
+              ? {}
+              : { resourceTypes: record.resourceTypes }),
           });
         }
       }
 
-      const plan = planRegistration(teamIds, existing, url);
+      const plan = planRegistration(teamIds, existing, url, RESOURCE_TYPES);
       const created: string[] = [];
       const failed: string[] = [];
       const deleteFailed = new Set<string>();
@@ -1999,7 +2030,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             "webhook",
             "create the webhook",
           );
-          await kv.write(`webhook:${teamId}`, { v: 1, id: webhook.id, url });
+          await kv.write(`webhook:${teamId}`, {
+            v: 1,
+            id: webhook.id,
+            url,
+            resourceTypes: [...RESOURCE_TYPES],
+          });
           webhookIds.set(teamId, webhook.id);
           created.push(team?.key ?? teamId);
         } catch (error) {
@@ -2536,6 +2572,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           workspaceId,
           kind: "other",
           issueId: null,
+          commentId: null,
           teamId: team.id,
           actorId: null,
           title: message,

@@ -4,20 +4,30 @@ import type {
   BreadthResult,
   IssueRelationsResult,
   IssueDetailNode,
+  IssueHistoryNode,
   IssueNode,
+  InverseRelationNode,
+  RelationNode,
+  TickIssueNode,
   TeamGraphResult,
 } from "../linear/types.js";
 import type { IssueInput, Store, TeamInput } from "../store/store.js";
 import type {
+  AttachmentRow,
   CommentRow,
+  CustomerNeedRow,
   CycleRow,
+  DocumentRow,
+  HistoryEventRow,
   LabelRow,
   MemberRow,
   MilestoneRow,
   ProjectRow,
+  ReactionRow,
   RelationRow,
   WorkflowStateRow,
 } from "../store/rows.js";
+import { normalizeHistory } from "./history.js";
 
 /**
  * The one boundary where Linear's shapes become the mirror's rows.
@@ -274,6 +284,12 @@ export function applyIssues(
       // month resolving to "no such issue".
       store.putPreviousIdentifiers(node.id, node.previousIdentifiers);
     }
+    if (isTickIssue(node)) {
+      store.mergeAttachments(toAttachmentRows(node.id, node.attachments.nodes));
+      store.mergeRelations(
+        relationRowsFor(node.id, node.relations.nodes, node.inverseRelations.nodes),
+      );
+    }
   }
 
   let oldest: number | null = null;
@@ -307,6 +323,74 @@ export function applyIssueDetail(store: Store, node: IssueDetailNode, at: number
 
   applyIssues(store, [node, ...stubs], at);
 
+  // Parent and relation rows are expanded just enough to make the joined
+  // store readers useful before the ordinary poller reaches those issues.
+  // Existing full rows always win over these deliberately stale stubs. Their
+  // impossible Linear number (0), combined with no parent id, keeps this
+  // specific stub shape out of normal list/search/count reads without hiding
+  // the pre-existing child stubs from those surfaces.
+  const expanded = [
+    ...(node.parent === null
+      ? []
+      : [{
+          id: node.parent.id,
+          identifier: node.parent.identifier,
+          title: node.parent.title,
+          stateId: null,
+        }]),
+    ...node.relations.nodes.flatMap((relation) =>
+      relation.relatedIssue === null ||
+      relation.relatedIssue.identifier === undefined ||
+      relation.relatedIssue.title === undefined
+        ? []
+        : [{
+            id: relation.relatedIssue.id,
+            identifier: relation.relatedIssue.identifier,
+            title: relation.relatedIssue.title,
+            stateId: relation.relatedIssue.state?.id ?? null,
+          }],
+    ),
+    ...node.inverseRelations.nodes.flatMap((relation) =>
+      relation.issue === null ||
+      relation.issue.identifier === undefined ||
+      relation.issue.title === undefined
+        ? []
+        : [{
+            id: relation.issue.id,
+            identifier: relation.issue.identifier,
+            title: relation.issue.title,
+            stateId: relation.issue.state?.id ?? null,
+          }],
+    ),
+  ];
+  const existingExpanded = new Set(
+    store.issuesByIds(expanded.map((entry) => entry.id)).map((issue) => issue.id),
+  );
+  const sourceTeam = store.team(node.team.id);
+  store.putIssues(
+    expanded
+      .filter((entry) => !existingExpanded.has(entry.id))
+      .flatMap((entry) => {
+        const key = /^([A-Z][A-Z0-9]*)-\d+$/i.exec(entry.identifier)?.[1] ?? null;
+        if (key === null) return [];
+        const teamId =
+          key.toUpperCase() === node.team.key.toUpperCase()
+            ? node.team.id
+            : (() => {
+                if (sourceTeam === null) return null;
+                const matches = store
+                  .teamsByKey(key)
+                  .filter((team) => team.workspaceId === sourceTeam.workspaceId);
+                return matches.length === 1 ? matches[0]!.id : null;
+              })();
+        // A relation may cross teams or workspaces. Without an unambiguous
+        // target team, retaining only the relation ids is safer than inventing
+        // a fully queryable issue under the source issue's scope.
+        return teamId === null ? [] : [detailStubInput(entry, teamId)];
+      }),
+    at,
+  );
+
   const comments: CommentRow[] = node.comments.nodes.map((comment) => ({
     id: comment.id,
     issueId: comment.issue?.id ?? node.id,
@@ -318,8 +402,209 @@ export function applyIssueDetail(store: Store, node: IssueDetailNode, at: number
     updatedAt: parseInstant(comment.updatedAt) ?? at,
     editedAt: parseInstant(comment.editedAt),
     resolvedAt: parseInstant(comment.resolvedAt),
+    resolvingUserId: comment.resolvingUser?.id ?? null,
   }));
   store.putComments(comments);
+
+  const commentTimes = comments
+    .map((comment) => comment.createdAt)
+    .filter((value): value is number => value !== null);
+  if (commentTimes.length > 0) {
+    store.reconcileCommentsWindow(
+      node.id,
+      comments.map((comment) => comment.id),
+      node.comments.pageInfo.hasNextPage === false ? null : Math.min(...commentTimes),
+      Math.max(...commentTimes),
+    );
+  } else if (
+    node.comments.pageInfo.hasNextPage === false
+  ) {
+    // An empty, complete window means the issue has no comments. With no
+    // timestamps to bound the window, null/null deliberately covers all of
+    // this issue and removes comments deleted since the previous refresh.
+    store.reconcileCommentsWindow(node.id, [], null, null);
+  }
+
+  store.replaceAttachments(node.id, toAttachmentRows(node.id, node.attachments.nodes));
+  store.replaceRelations(
+    node.id,
+    relationRowsFor(node.id, node.relations.nodes, node.inverseRelations.nodes),
+  );
+
+  const historyRows: HistoryEventRow[] = [...node.history.nodes]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .flatMap((history) => historyRowsFor(node.id, history));
+  store.putHistory(historyRows);
+
+  const reactions: ReactionRow[] = [
+    ...toReactionRows(node.id, null, node.reactions),
+    ...node.comments.nodes.flatMap((comment) =>
+      toReactionRows(node.id, comment.id, comment.reactions ?? []),
+    ),
+  ];
+  store.replaceReactions(
+    node.id,
+    reactions,
+    node.comments.nodes.map((comment) => comment.id),
+  );
+  store.replaceSubscribers(
+    node.id,
+    node.subscribers.nodes.map((subscriber) => subscriber.id),
+  );
+  store.replaceDocuments(
+    node.id,
+    node.documents.nodes.map<DocumentRow>((document) => ({
+      id: document.id,
+      issueId: node.id,
+      title: document.title,
+      url: document.url,
+      updatedAt: parseInstant(document.updatedAt),
+      icon: document.icon,
+      color: document.color,
+    })),
+  );
+  store.replaceCustomerNeeds(
+    node.id,
+    node.needs.nodes.map<CustomerNeedRow>((need) => ({
+      id: need.id,
+      issueId: node.id,
+      customerName: need.customer?.name ?? null,
+      priority: need.priority,
+      body: need.body,
+      url: need.url,
+      createdAt: parseInstant(need.createdAt),
+    })),
+  );
+  store.putActivityCursor({
+    issueId: node.id,
+    commentsCursor: node.comments.pageInfo.endCursor ?? null,
+    commentsMore: node.comments.pageInfo.hasNextPage,
+    historyCursor: node.history.pageInfo.endCursor ?? null,
+    historyMore: node.history.pageInfo.hasNextPage,
+    direction: "after",
+  });
+}
+
+function isTickIssue(node: IssueNode): node is TickIssueNode {
+  return "attachments" in node && "relations" in node && "inverseRelations" in node;
+}
+
+function toAttachmentRows(
+  issueId: string,
+  nodes: TickIssueNode["attachments"]["nodes"],
+): AttachmentRow[] {
+  return nodes.map((attachment) => ({
+    id: attachment.id,
+    issueId,
+    title: attachment.title,
+    subtitle: attachment.subtitle,
+    url: attachment.url,
+    sourceType: attachment.sourceType,
+    groupBySource: attachment.groupBySource,
+    createdAt: parseInstant(attachment.createdAt),
+    updatedAt: parseInstant(attachment.updatedAt),
+    creatorId: attachment.creator?.id ?? null,
+  }));
+}
+
+function relationRowsFor(
+  issueId: string,
+  relations: readonly RelationNode[],
+  inverseRelations: readonly InverseRelationNode[],
+): RelationRow[] {
+  return [
+    ...relations.flatMap((relation) =>
+      relation.relatedIssue === null
+        ? []
+        : [{
+            id: relation.id,
+            issueId,
+            relatedIssueId: relation.relatedIssue.id,
+            type: relation.type,
+          }],
+    ),
+    ...inverseRelations.flatMap((relation) =>
+      relation.issue === null
+        ? []
+        : [{
+            id: relation.id,
+            issueId: relation.issue.id,
+            relatedIssueId: issueId,
+            type: relation.type,
+          }],
+    ),
+  ];
+}
+
+function historyRowsFor(issueId: string, node: IssueHistoryNode): HistoryEventRow[] {
+  const normalized = normalizeHistory(node);
+  if (normalized === null) return [];
+  const createdAt = parseInstant(node.createdAt);
+  if (createdAt === null) return [];
+  return normalized.map((event) => ({
+    id: `${node.id}:${event.kind}`,
+    issueId,
+    createdAt,
+    actorId: node.actorId ?? node.actor?.id ?? null,
+    botName: node.botActor?.name ?? null,
+    kind: event.kind,
+    payload: event.payload,
+  }));
+}
+
+function toReactionRows(
+  issueId: string,
+  commentId: string | null,
+  nodes: readonly { id: string; emoji: string; createdAt: string; user: { id: string } | null }[],
+): ReactionRow[] {
+  return nodes.map((reaction) => ({
+    id: reaction.id,
+    issueId,
+    commentId,
+    emoji: reaction.emoji,
+    userId: reaction.user?.id ?? null,
+    createdAt: parseInstant(reaction.createdAt),
+  }));
+}
+
+function detailStubInput(
+  entry: { id: string; identifier: string; title: string; stateId: string | null },
+  teamId: string,
+): IssueInput {
+  return {
+    id: entry.id,
+    identifier: entry.identifier,
+    number: 0,
+    teamId,
+    title: entry.title,
+    description: null,
+    url: null,
+    branchName: null,
+    priority: 0,
+    estimate: null,
+    stateId: entry.stateId,
+    assigneeId: null,
+    creatorId: null,
+    projectId: null,
+    milestoneId: null,
+    cycleId: null,
+    parentId: null,
+    dueDate: null,
+    sortOrder: 0,
+    subIssueSortOrder: null,
+    labelIds: [],
+    startedAt: null,
+    completedAt: null,
+    canceledAt: null,
+    triagedAt: null,
+    archivedAt: null,
+    // A relation/parent selection does not carry the target's creation time.
+    // Null is honest and prevents a directly opened stub from synthesizing a
+    // false `created` timeline event from the source issue's timestamp.
+    createdAt: null,
+    // A real delta always supersedes a zero-version stub.
+    updatedAt: 0,
+  };
 }
 
 /**
@@ -367,7 +652,11 @@ function detailChildToNode(
     project: null,
     projectMilestone: null,
     cycle: null,
-    parent: { id: parent.id },
+    parent: {
+      id: parent.id,
+      identifier: parent.identifier,
+      title: parent.title,
+    },
   };
 }
 
@@ -443,31 +732,12 @@ export function applyBreadth(store: Store, result: BreadthResult, at: number): v
  * answers "what blocks me" and "what do I block".
  */
 export function applyRelations(store: Store, result: IssueRelationsResult): void {
-  const rows: RelationRow[] = [];
-
-  for (const node of result.issue.relations.nodes) {
-    if (node.relatedIssue === null) continue;
-    rows.push({
-      id: node.id,
-      issueId: result.issue.id,
-      relatedIssueId: node.relatedIssue.id,
-      type: node.type,
-    });
-  }
-
-  store.replaceRelations(result.issue.id, rows);
-
-  // The inverse side is declared by the *other* issue, so it is written under
-  // that issue's id — never replacing this issue's own set.
-  for (const node of result.issue.inverseRelations.nodes) {
-    if (node.issue === null) continue;
-    store.replaceRelations(node.issue.id, [
-      {
-        id: node.id,
-        issueId: node.issue.id,
-        relatedIssueId: result.issue.id,
-        type: node.type,
-      },
-    ]);
-  }
+  store.replaceRelations(
+    result.issue.id,
+    relationRowsFor(
+      result.issue.id,
+      result.issue.relations.nodes,
+      result.issue.inverseRelations.nodes,
+    ),
+  );
 }

@@ -3,6 +3,10 @@ import {
   BOOTSTRAP,
   COMMENT_CREATE,
   COMMENT_PAGE_SIZE,
+  ATTACHMENT_PAGE_SIZE,
+  CUSTOMER_NEED_PAGE_SIZE,
+  DOCUMENT_PAGE_SIZE,
+  HISTORY_PAGE_SIZE,
   ISSUE_DETAIL,
   ISSUE_UPDATE,
   ISSUES_BACKFILL,
@@ -24,6 +28,7 @@ import {
   NOTIFICATIONS,
   NOTIFICATION_PAGE_SIZE,
   RELATED_PAGE_SIZE,
+  SUBSCRIBER_PAGE_SIZE,
   STATE_PAGE_SIZE,
   ATTACHMENT_LINK,
   ISSUE_ARCHIVE,
@@ -300,7 +305,16 @@ export const createLinearClient: LinearClientFactory = (session, options) => {
     issueDetail: (id, callOptions) =>
       transport.execute<IssueDetailResult>(
         ISSUE_DETAIL,
-        call(callOptions, { id, comments: COMMENT_PAGE_SIZE, related: RELATED_PAGE_SIZE }),
+        call(callOptions, {
+          id,
+          comments: COMMENT_PAGE_SIZE,
+          related: RELATED_PAGE_SIZE,
+          attachments: ATTACHMENT_PAGE_SIZE,
+          history: HISTORY_PAGE_SIZE,
+          subscribers: SUBSCRIBER_PAGE_SIZE,
+          documents: DOCUMENT_PAGE_SIZE,
+          needs: CUSTOMER_NEED_PAGE_SIZE,
+        }),
       ),
 
     updateIssue: (id, input, callOptions) =>

@@ -682,4 +682,91 @@ export const MIGRATIONS: string[] = [
   /* ── M25: inspectable project-binding provenance ────────────────────── */
 
   `ALTER TABLE binding ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'`,
+
+  /* ── M26: issue-pane read parity ─────────────────────────────────────── */
+
+  `CREATE TABLE IF NOT EXISTS attachment (
+     id TEXT PRIMARY KEY,
+     issue_id TEXT NOT NULL,
+     title TEXT NOT NULL,
+     subtitle TEXT,
+     url TEXT NOT NULL,
+     source_type TEXT,
+     group_by_source INTEGER NOT NULL DEFAULT 0,
+     created_at INTEGER,
+     updated_at INTEGER,
+     creator_id TEXT
+   )`,
+
+  `CREATE INDEX IF NOT EXISTS attachment_by_issue
+     ON attachment (issue_id, created_at)`,
+
+  // History is normalized before persistence. The projection reads a stable
+  // kind and JSON payload rather than learning Linear's raw history grammar.
+  `CREATE TABLE IF NOT EXISTS issue_history (
+     id TEXT PRIMARY KEY,
+     issue_id TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     actor_id TEXT,
+     bot_name TEXT,
+     kind TEXT NOT NULL,
+     payload TEXT NOT NULL
+   )`,
+
+  `CREATE INDEX IF NOT EXISTS issue_history_by_issue
+     ON issue_history (issue_id, created_at)`,
+
+  `CREATE TABLE IF NOT EXISTS reaction (
+     id TEXT PRIMARY KEY,
+     issue_id TEXT NOT NULL,
+     comment_id TEXT,
+     emoji TEXT NOT NULL,
+     user_id TEXT,
+     created_at INTEGER
+   )`,
+
+  `CREATE INDEX IF NOT EXISTS reaction_by_issue ON reaction (issue_id)`,
+  `CREATE INDEX IF NOT EXISTS reaction_by_comment ON reaction (comment_id)`,
+
+  `CREATE TABLE IF NOT EXISTS subscriber (
+     issue_id TEXT NOT NULL,
+     user_id TEXT NOT NULL,
+     PRIMARY KEY (issue_id, user_id)
+   )`,
+
+  `CREATE TABLE IF NOT EXISTS document (
+     id TEXT PRIMARY KEY,
+     issue_id TEXT NOT NULL,
+     title TEXT NOT NULL,
+     url TEXT NOT NULL,
+     updated_at INTEGER,
+     icon TEXT,
+     color TEXT
+   )`,
+
+  `CREATE INDEX IF NOT EXISTS document_by_issue ON document (issue_id)`,
+
+  `CREATE TABLE IF NOT EXISTS customer_need (
+     id TEXT PRIMARY KEY,
+     issue_id TEXT NOT NULL,
+     customer_name TEXT,
+     priority REAL NOT NULL,
+     body TEXT,
+     url TEXT,
+     created_at INTEGER
+   )`,
+
+  `CREATE INDEX IF NOT EXISTS customer_need_by_issue ON customer_need (issue_id)`,
+
+  `CREATE TABLE IF NOT EXISTS activity_cursor (
+     issue_id TEXT PRIMARY KEY,
+     comments_cursor TEXT,
+     comments_more INTEGER NOT NULL DEFAULT 0,
+     history_cursor TEXT,
+     history_more INTEGER NOT NULL DEFAULT 0,
+     direction TEXT NOT NULL
+   )`,
+
+  `ALTER TABLE comment ADD COLUMN resolving_user_id TEXT`,
+  `ALTER TABLE inbox ADD COLUMN comment_id TEXT`,
 ];

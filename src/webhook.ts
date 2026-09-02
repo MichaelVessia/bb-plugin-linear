@@ -38,6 +38,9 @@ export const RESOURCE_TYPES = [
   "Project",
   "Cycle",
   "IssueAttachment",
+  // Existing registrations gain this on the next explicit
+  // `bb linear webhook enable`, which re-registers the declared set.
+  "Reaction",
 ] as const;
 
 /** Linear recommends rejecting anything outside a minute of local time, to
@@ -66,7 +69,35 @@ export interface WebhookBody {
   readonly organizationId?: string;
   readonly webhookId?: string;
   readonly webhookTimestamp: number;
-  readonly data?: { readonly id?: string; readonly teamId?: string; readonly team?: { id?: string } };
+  readonly data?: {
+    readonly id?: string;
+    readonly teamId?: string;
+    readonly team?: { readonly id?: string };
+    readonly issueId?: unknown;
+    readonly issue?: unknown;
+    readonly commentId?: unknown;
+  };
+}
+
+/** A webhook payload is an untrusted refresh hint, never a store write. */
+export function webhookIssueRefreshId(
+  body: WebhookBody,
+  issueIdForComment: (commentId: string) => string | null = () => null,
+): string | null {
+  if (body.type !== "IssueAttachment" && body.type !== "Reaction" && body.type !== "Comment") {
+    return null;
+  }
+  const direct = body.data?.issueId;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const issue = body.data?.issue;
+  if (typeof issue === "object" && issue !== null && "id" in issue) {
+    const nested = (issue as { readonly id?: unknown }).id;
+    if (typeof nested === "string" && nested.length > 0) return nested;
+  }
+  const commentId = body.data?.commentId;
+  return body.type === "Reaction" && typeof commentId === "string" && commentId.length > 0
+    ? issueIdForComment(commentId)
+    : null;
 }
 
 export interface VerifyContext {

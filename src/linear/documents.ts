@@ -356,6 +356,8 @@ const ISSUE_FIELDS = `fragment IssueFields on Issue {
   }
   parent {
     id
+    identifier
+    title
   }
 }`;
 
@@ -436,8 +438,117 @@ ${ISSUE_FIELDS}`,
 /* One issue                                                                  */
 /* ────────────────────────────────────────────────────────────────────────── */
 
-export const COMMENT_PAGE_SIZE = 20;
+export const COMMENT_PAGE_SIZE = 50;
 export const RELATED_PAGE_SIZE = 20;
+export const ATTACHMENT_PAGE_SIZE = 20;
+export const HISTORY_PAGE_SIZE = 100;
+export const SUBSCRIBER_PAGE_SIZE = 50;
+export const DOCUMENT_PAGE_SIZE = 10;
+export const CUSTOMER_NEED_PAGE_SIZE = 10;
+
+const ATTACHMENT_FIELDS = `fragment AttachmentFields on Attachment {
+  id
+  title
+  subtitle
+  url
+  sourceType
+  groupBySource
+  createdAt
+  updatedAt
+  creator {
+    id
+  }
+}`;
+
+const REACTION_FIELDS = `fragment ReactionFields on Reaction {
+  id
+  emoji
+  createdAt
+  user {
+    id
+  }
+}`;
+
+const COMMENT_FIELDS = `fragment CommentFields on Comment {
+  id
+  body
+  url
+  createdAt
+  updatedAt
+  editedAt
+  resolvedAt
+  resolvingUser {
+    id
+  }
+  user {
+    id
+  }
+  parent {
+    id
+  }
+  issue {
+    id
+  }
+  reactions {
+    ...ReactionFields
+  }
+}`;
+
+/**
+ * History has no direction argument. Linear returns it newest-first, so detail
+ * uses `first:` and older-page reads continue with `after:`. The apply path
+ * sorts by `createdAt`, so API order does not become a projection invariant;
+ * page info still carries both cursors as defensive response metadata.
+ */
+const HISTORY_FIELDS = `fragment IssueHistoryFields on IssueHistory {
+  id
+  createdAt
+  actorId
+  actor {
+    id
+  }
+  botActor {
+    name
+  }
+  fromStateId
+  toStateId
+  fromAssigneeId
+  toAssigneeId
+  fromPriority
+  toPriority
+  fromEstimate
+  toEstimate
+  fromDueDate
+  toDueDate
+  fromProjectId
+  toProjectId
+  fromCycleId
+  toCycleId
+  fromParentId
+  toParentId
+  fromTitle
+  toTitle
+  addedLabelIds
+  removedLabelIds
+  updatedDescription
+  archived
+  trashed
+  autoArchived
+  autoClosed
+  attachmentId
+  fromTeamId
+  toTeamId
+  fromProjectMilestone {
+    id
+  }
+  toProjectMilestone {
+    id
+  }
+  relationChanges {
+    identifier
+    type
+  }
+}`;
 
 /**
  * Everything the detail pane shows, and everything a thread spawned from an
@@ -454,14 +565,24 @@ export const RELATED_PAGE_SIZE = 20;
  * resolve to something real, so anything about to mutate validates the team
  * first.
  *
- * `comments(first: 20)` is one connection page, which covers the overwhelming
- * majority of issues; older comments load on demand rather than making every
- * open of every issue pay for the rare thread with two hundred replies.
+ * Linear orders these activity connections newest-first. `first: 50` is
+ * therefore the newest comment page, and older activity is reached with the
+ * returned `endCursor` as `after:`. Using `last:` looks plausible but returns
+ * the oldest page and strands the newest activity on busy issues.
  */
 export const ISSUE_DETAIL = doc(
   "IssueDetail",
   "query",
-  `query IssueDetail($id: String!, $comments: Int!, $related: Int!) {
+  `query IssueDetail(
+  $id: String!
+  $comments: Int!
+  $related: Int!
+  $attachments: Int!
+  $history: Int!
+  $subscribers: Int!
+  $documents: Int!
+  $needs: Int!
+) {
   issue(id: $id) {
     ...IssueFields
     priorityLabel
@@ -476,24 +597,92 @@ export const ISSUE_DETAIL = doc(
         }
       }
     }
-    comments(first: $comments) {
+    attachments(first: $attachments) {
+      nodes {
+        ...AttachmentFields
+      }
+    }
+    relations(first: $related) {
       nodes {
         id
-        body
-        url
-        createdAt
-        updatedAt
-        editedAt
-        resolvedAt
-        user {
+        type
+        relatedIssue {
           id
+          identifier
+          title
+          state {
+            id
+            type
+          }
         }
-        parent {
+      }
+    }
+    inverseRelations(first: $related) {
+      nodes {
+        id
+        type
+        issue {
           id
+          identifier
+          title
+          state {
+            id
+            type
+          }
         }
+      }
+    }
+    history(first: $history) {
+      nodes {
+        ...IssueHistoryFields
       }
       pageInfo {
         hasNextPage
+        endCursor
+        hasPreviousPage
+        startCursor
+      }
+    }
+    reactions {
+      ...ReactionFields
+    }
+    comments(first: $comments) {
+      nodes {
+        ...CommentFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+        hasPreviousPage
+        startCursor
+      }
+    }
+    subscribers(first: $subscribers) {
+      nodes {
+        id
+      }
+    }
+    documents(first: $documents) {
+      nodes {
+        id
+        title
+        url
+        updatedAt
+        icon
+        color
+      }
+    }
+    needs(first: $needs) {
+      nodes {
+        id
+        body
+        priority
+        url
+        createdAt
+        customer {
+          id
+          name
+        }
       }
     }
     team {
@@ -505,8 +694,72 @@ export const ISSUE_DETAIL = doc(
   }
 }
 
-${ISSUE_FIELDS}`,
-  { comments: COMMENT_PAGE_SIZE, related: RELATED_PAGE_SIZE },
+${ISSUE_FIELDS}
+${ATTACHMENT_FIELDS}
+${REACTION_FIELDS}
+${COMMENT_FIELDS}
+${HISTORY_FIELDS}`,
+  {
+    comments: COMMENT_PAGE_SIZE,
+    related: RELATED_PAGE_SIZE,
+    attachments: ATTACHMENT_PAGE_SIZE,
+    history: HISTORY_PAGE_SIZE,
+    subscribers: SUBSCRIBER_PAGE_SIZE,
+    documents: DOCUMENT_PAGE_SIZE,
+    needs: CUSTOMER_NEED_PAGE_SIZE,
+  },
+);
+
+/** Older comments and history follow Linear's newest-first connection order:
+ * both lanes advance with `first`/`after`, independently, from the end cursor
+ * persisted by the detail apply path. */
+export const ISSUE_ACTIVITY_PAGE = doc(
+  "IssueActivityPage",
+  "query",
+  `query IssueActivityPage(
+  $id: String!
+  $comments: Int!
+  $commentsAfter: String
+  $history: Int!
+  $historyAfter: String
+) {
+  issue(id: $id) {
+    id
+    comments(
+      first: $comments
+      after: $commentsAfter
+    ) {
+      nodes {
+        ...CommentFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+        hasPreviousPage
+        startCursor
+      }
+    }
+    history(
+      first: $history
+      after: $historyAfter
+    ) {
+      nodes {
+        ...IssueHistoryFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+        hasPreviousPage
+        startCursor
+      }
+    }
+  }
+}
+
+${REACTION_FIELDS}
+${COMMENT_FIELDS}
+${HISTORY_FIELDS}`,
+  { comments: COMMENT_PAGE_SIZE, history: HISTORY_PAGE_SIZE },
 );
 
 /* ────────────────────────────────────────────────────────────────────────── */
@@ -583,6 +836,8 @@ export const COMMENT_CREATE = doc(
 
 export const TICK_ISSUE_PAGE_SIZE = 100;
 export const TICK_COMMENT_PAGE_SIZE = 50;
+export const TICK_ATTACHMENT_PAGE_SIZE = 5;
+export const TICK_RELATED_PAGE_SIZE = 5;
 
 /**
  * **One tick is one HTTP request.**
@@ -620,6 +875,8 @@ export const TICK = doc(
   $commentsSince: DateTimeOrDuration!
   $issues: Int!
   $comments: Int!
+  $issueAttachments: Int!
+  $issueRelations: Int!
   $issuesAfter: String
   $commentsAfter: String
 ) {
@@ -632,6 +889,29 @@ export const TICK = doc(
   ) {
     nodes {
       ...IssueFields
+      attachments(first: $issueAttachments) {
+        nodes {
+          ...AttachmentFields
+        }
+      }
+      relations(first: $issueRelations) {
+        nodes {
+          id
+          type
+          relatedIssue {
+            id
+          }
+        }
+      }
+      inverseRelations(first: $issueRelations) {
+        nodes {
+          id
+          type
+          issue {
+            id
+          }
+        }
+      }
     }
     pageInfo {
       hasNextPage
@@ -648,22 +928,7 @@ export const TICK = doc(
     }
   ) {
     nodes {
-      id
-      body
-      url
-      createdAt
-      updatedAt
-      editedAt
-      resolvedAt
-      user {
-        id
-      }
-      parent {
-        id
-      }
-      issue {
-        id
-      }
+      ...CommentFields
     }
     pageInfo {
       hasNextPage
@@ -672,8 +937,16 @@ export const TICK = doc(
   }
 }
 
-${ISSUE_FIELDS}`,
-  { issues: TICK_ISSUE_PAGE_SIZE, comments: TICK_COMMENT_PAGE_SIZE },
+${ISSUE_FIELDS}
+${ATTACHMENT_FIELDS}
+${REACTION_FIELDS}
+${COMMENT_FIELDS}`,
+  {
+    issues: TICK_ISSUE_PAGE_SIZE,
+    comments: TICK_COMMENT_PAGE_SIZE,
+    issueAttachments: TICK_ATTACHMENT_PAGE_SIZE,
+    issueRelations: TICK_RELATED_PAGE_SIZE,
+  },
 );
 
 /* ────────────────────────────────────────────────────────────────────────── */

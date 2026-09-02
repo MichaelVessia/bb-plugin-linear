@@ -22,9 +22,16 @@ export interface Ref {
   readonly id: string;
 }
 
+export interface IssueParentRef extends Ref {
+  readonly identifier: string;
+  readonly title: string;
+}
+
 export interface PageInfo {
   readonly hasNextPage: boolean;
   readonly endCursor?: string | null;
+  readonly hasPreviousPage?: boolean;
+  readonly startCursor?: string | null;
 }
 
 export interface Connection<T> {
@@ -167,7 +174,7 @@ export interface IssueNode {
   readonly project: Ref | null;
   readonly projectMilestone: Ref | null;
   readonly cycle: Ref | null;
-  readonly parent: Ref | null;
+  readonly parent: IssueParentRef | null;
 }
 
 export interface IssuesResult {
@@ -186,9 +193,95 @@ export interface CommentNode {
   readonly updatedAt: string;
   readonly editedAt: string | null;
   readonly resolvedAt: string | null;
+  readonly resolvingUser?: Ref | null;
   readonly user: Ref | null;
   readonly parent: Ref | null;
   readonly issue?: Ref | null;
+  readonly reactions?: readonly ReactionNode[];
+}
+
+export interface ReactionNode {
+  readonly id: string;
+  readonly emoji: string;
+  readonly createdAt: string;
+  readonly user: Ref | null;
+}
+
+export interface AttachmentNode {
+  readonly id: string;
+  readonly title: string;
+  readonly subtitle: string | null;
+  readonly url: string;
+  readonly sourceType: string | null;
+  readonly groupBySource: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly creator: Ref | null;
+}
+
+export interface RelationNode {
+  readonly id: string;
+  readonly type: string;
+  readonly relatedIssue: (Ref & {
+    readonly identifier?: string;
+    readonly title?: string;
+    readonly state?: { readonly id: string; readonly type: string };
+  }) | null;
+}
+
+export interface InverseRelationNode {
+  readonly id: string;
+  readonly type: string;
+  readonly issue: (Ref & {
+    readonly identifier?: string;
+    readonly title?: string;
+    readonly state?: { readonly id: string; readonly type: string };
+  }) | null;
+}
+
+export interface IssueHistoryNode {
+  readonly id: string;
+  readonly createdAt: string;
+  readonly actorId: string | null;
+  readonly actor: Ref | null;
+  readonly botActor: { readonly name: string } | null;
+  readonly fromStateId: string | null;
+  readonly toStateId: string | null;
+  readonly fromAssigneeId: string | null;
+  readonly toAssigneeId: string | null;
+  readonly fromPriority: number | null;
+  readonly toPriority: number | null;
+  readonly fromEstimate: number | null;
+  readonly toEstimate: number | null;
+  readonly fromDueDate: string | null;
+  readonly toDueDate: string | null;
+  readonly fromProjectId: string | null;
+  readonly toProjectId: string | null;
+  readonly fromCycleId: string | null;
+  readonly toCycleId: string | null;
+  readonly fromParentId: string | null;
+  readonly toParentId: string | null;
+  readonly fromTitle: string | null;
+  readonly toTitle: string | null;
+  readonly addedLabelIds: readonly string[] | null;
+  readonly removedLabelIds: readonly string[] | null;
+  readonly updatedDescription: boolean | null;
+  readonly archived: boolean | null;
+  readonly trashed: boolean | null;
+  readonly autoArchived: boolean | null;
+  readonly autoClosed: boolean | null;
+  readonly attachmentId: string | null;
+  readonly fromTeamId: string | null;
+  readonly toTeamId: string | null;
+  readonly fromProjectMilestone: Ref | null;
+  readonly toProjectMilestone: Ref | null;
+  readonly relationChanges: readonly { readonly identifier: string; readonly type: string }[] | null;
+}
+
+export interface TickIssueNode extends IssueNode {
+  readonly attachments: Connection<AttachmentNode>;
+  readonly relations: Connection<RelationNode>;
+  readonly inverseRelations: Connection<InverseRelationNode>;
 }
 
 export interface ChildIssueNode {
@@ -203,6 +296,28 @@ export interface IssueDetailNode extends IssueNode {
   readonly priorityLabel: string;
   readonly children: Connection<ChildIssueNode>;
   readonly comments: Connection<CommentNode>;
+  readonly attachments: Connection<AttachmentNode>;
+  readonly relations: Connection<RelationNode>;
+  readonly inverseRelations: Connection<InverseRelationNode>;
+  readonly history: Connection<IssueHistoryNode>;
+  readonly reactions: readonly ReactionNode[];
+  readonly subscribers: Connection<Ref>;
+  readonly documents: Connection<{
+    readonly id: string;
+    readonly title: string;
+    readonly url: string;
+    readonly updatedAt: string;
+    readonly icon: string | null;
+    readonly color: string | null;
+  }>;
+  readonly needs: Connection<{
+    readonly id: string;
+    readonly body: string | null;
+    readonly priority: number;
+    readonly url: string | null;
+    readonly createdAt: string;
+    readonly customer: { readonly id: string; readonly name: string } | null;
+  }>;
   readonly team: Ref & {
     readonly key: string;
     readonly name: string;
@@ -235,7 +350,7 @@ export interface CommentCreateResult {
 }
 
 export interface TickResult {
-  readonly issues: Connection<IssueNode>;
+  readonly issues: Connection<TickIssueNode>;
   readonly comments: Connection<CommentNode>;
 }
 

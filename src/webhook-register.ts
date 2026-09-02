@@ -349,15 +349,25 @@ export interface RegistrationPlan {
 /**
  * One webhook per bound team, because `WebhookCreateInput.teamId` is singular
  * and `WebhookUpdateInput` cannot change team scope at all — so re-scoping is
- * delete-then-create, and a URL change is a full replacement.
+ * delete-then-create. URL or declared resource-set changes are full
+ * replacements; persisting the last registered set lets an explicit enable
+ * upgrade old registrations without churning already-current ones.
  *
  * `allPublicTeams` is never used. It would haul other teams' data into the
  * mirror and contradict the entire scoping promise.
  */
 export function planRegistration(
   boundTeamIds: readonly string[],
-  existing: ReadonlyMap<string, { readonly id: string; readonly url: string }>,
+  existing: ReadonlyMap<
+    string,
+    {
+      readonly id: string;
+      readonly url: string;
+      readonly resourceTypes?: readonly string[];
+    }
+  >,
   url: string,
+  resourceTypes: readonly string[],
 ): RegistrationPlan {
   const bound = new Set(boundTeamIds);
   const create: string[] = [];
@@ -367,7 +377,10 @@ export function planRegistration(
   for (const teamId of bound) {
     const record = existing.get(teamId);
     if (record === undefined) create.push(teamId);
-    else if (record.url !== url) {
+    else if (
+      record.url !== url ||
+      !sameStringSet(record.resourceTypes ?? [], resourceTypes)
+    ) {
       deleteIds.push({ id: record.id, teamId });
       create.push(teamId);
     } else keep.push(teamId);
@@ -378,4 +391,16 @@ export function planRegistration(
   }
 
   return { create, deleteIds, keep };
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const actual = new Set(left);
+  const expected = new Set(right);
+  return (
+    actual.size === left.length &&
+    expected.size === right.length &&
+    actual.size === expected.size &&
+    [...actual].every((value) => expected.has(value))
+  );
 }

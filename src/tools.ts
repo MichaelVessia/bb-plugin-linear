@@ -140,6 +140,14 @@ export function toolsFor(writes: AgentWrites): string[] {
   return [...READ_TOOLS, ...COMMENT_TOOLS, ...WRITE_TOOLS];
 }
 
+/** Parent/relation placeholders are useful for joins but are not complete
+ * enough to answer `linear_issue_get`. Child placeholders keep a parent id and
+ * remain renderable as sub-issues; detached number-zero rows must be refreshed
+ * before an agent receives them as a full issue. */
+export function issueNeedsRefresh(issue: IssueRow): boolean {
+  return issue.number === 0 && issue.parentId === null;
+}
+
 export const UNBOUND_INSTRUCTION =
   "This bb project isn't bound to a Linear team, so Linear tools are unavailable here. Use the Linear panel's Bind button or run `bb linear bind TEAM-KEY`. `linear_thread_bind` remains available for linking a thread after the project has a team.";
 
@@ -277,7 +285,10 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       }
       local = inScope[0] ?? null;
     }
-    const issue = local ?? (await deps.refreshIssue(idOrIdentifier, permitted, signal));
+    const issue =
+      local === null || issueNeedsRefresh(local)
+        ? await deps.refreshIssue(idOrIdentifier, permitted, signal)
+        : local;
     if (issue === null) {
       throw new Error(`No issue called ${idOrIdentifier}.`);
     }

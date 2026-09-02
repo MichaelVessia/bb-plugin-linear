@@ -375,6 +375,13 @@ describe("deliverToPeer", () => {
 });
 
 describe("the inbox", () => {
+  it("persists the notification comment id for Slice C deep links", () => {
+    const store = createTestStore();
+    const row = toInboxRow(node({ commentId: "comment_1" }), NOW, "ws");
+    store.putInbox([row]);
+    expect(store.inbox()[0]?.commentId).toBe("comment_1");
+  });
+
   it("reads as one sentence with an actor, a verb and an object", () => {
     const row = toInboxRow(node(), NOW, "ws");
     const view = selectInboxItem({

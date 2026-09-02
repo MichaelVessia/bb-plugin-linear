@@ -234,13 +234,41 @@ describe("planTick", () => {
       commentsSince: "S2",
       tickNumber: 0,
     });
-    for (const name of ["teamIds", "issuesSince", "commentsSince", "issues", "comments"]) {
+    for (const name of [
+      "teamIds",
+      "issuesSince",
+      "commentsSince",
+      "issues",
+      "comments",
+      "issueAttachments",
+      "issueRelations",
+    ]) {
       expect(Object.keys(plan.variables)).toContain(name);
     }
     // Comments carry their own cursor, because whether commenting bumps
     // Issue.updatedAt is not documented and Automation 3 depends on seeing
     // them.
     expect(plan.variables["issuesSince"]).not.toBe(plan.variables["commentsSince"]);
+  });
+
+  it("terminates over budget by reducing a single team's issue page and recomputing", () => {
+    const baseline = planTick({
+      teamIds: ["a"],
+      issuesSince: "S1",
+      commentsSince: "S2",
+      tickNumber: 0,
+    });
+    const fitted = planTick({
+      teamIds: ["a"],
+      issuesSince: "S1",
+      commentsSince: "S2",
+      tickNumber: 0,
+      complexityBudget: 4_000,
+    });
+    expect(fitted.shardCount).toBe(1);
+    expect(fitted.variables["issues"]).toBeLessThan(baseline.variables["issues"] as number);
+    expect(fitted.estimatedComplexity).toBeLessThan(baseline.estimatedComplexity);
+    expect(fitted.estimatedComplexity).toBeLessThanOrEqual(4_000);
   });
 });
 
@@ -431,9 +459,18 @@ describe("runTick", () => {
             updatedAt: "2026-08-12T10:00:00.000Z",
             editedAt: null,
             resolvedAt: null,
+            resolvingUser: { id: "u_resolver" },
             user: null,
             parent: null,
             issue: { id: "i_1" },
+            reactions: [
+              {
+                id: "reaction_1",
+                emoji: "eyes",
+                createdAt: "2026-08-12T10:00:00.000Z",
+                user: { id: "u_reactor" },
+              },
+            ],
           },
         ],
         pageInfo: { hasNextPage: false },
@@ -445,6 +482,10 @@ describe("runTick", () => {
     );
     expect(outcome.commentsWritten).toBe(1);
     expect(store.comments("i_1")).toHaveLength(1);
+    expect(store.comments("i_1")[0]?.resolvingUserId).toBe("u_resolver");
+    expect(store.reactionsFor("i_1")).toEqual([
+      expect.objectContaining({ id: "reaction_1", commentId: "c_1", userId: "u_reactor" }),
+    ]);
   });
 
   it("does not advance a watermark past an incomplete page", async () => {

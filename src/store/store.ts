@@ -1,13 +1,18 @@
 import type { Database } from "better-sqlite3";
 import { MIGRATIONS } from "./migrations.js";
 import type {
+  ActivityCursorRow,
+  AttachmentRow,
   BindingRole,
   BindingRow,
   BranchLinkRow,
   CommentRow,
+  CustomerNeedRow,
   CycleRow,
+  DocumentRow,
   GitAutomationRow,
   InboxRowRecord,
+  HistoryEventRow,
   IssueRow,
   LabelRow,
   MemberRow,
@@ -16,6 +21,8 @@ import type {
   ProjectRow,
   PrStateRow,
   RelationRow,
+  RelationDetailRow,
+  ReactionRow,
   ProjectStatusRow,
   TeamRow,
   ThreadLinkRow,
@@ -255,6 +262,42 @@ export interface Store {
   /** Upsert comments and report how many are new or carry a different Linear version. */
   putComments(comments: readonly CommentRow[]): number;
   comments(issueId: string): CommentRow[];
+  /** Resolve a comment-only webhook hint back to its mirrored issue. */
+  commentIssueId(commentId: string): string | null;
+  reconcileCommentsWindow(
+    issueId: string,
+    fetchedIds: readonly string[],
+    windowStart: number | null,
+    windowEnd: number | null,
+  ): number;
+
+  replaceAttachments(issueId: string, rows: readonly AttachmentRow[]): void;
+  mergeAttachments(rows: readonly AttachmentRow[]): void;
+  attachmentsFor(issueId: string): AttachmentRow[];
+
+  putHistory(rows: readonly HistoryEventRow[]): void;
+  historyFor(issueId: string, options?: { limit?: number }): HistoryEventRow[];
+
+  /** Replace issue reactions and, when supplied, only the fetched comment window. */
+  replaceReactions(
+    issueId: string,
+    rows: readonly ReactionRow[],
+    fetchedCommentIds?: readonly string[],
+  ): void;
+  mergeReactions(rows: readonly ReactionRow[]): void;
+  reactionsFor(issueId: string): ReactionRow[];
+
+  replaceSubscribers(issueId: string, userIds: readonly string[]): void;
+  subscribersFor(issueId: string): string[];
+
+  replaceDocuments(issueId: string, rows: readonly DocumentRow[]): void;
+  documentsFor(issueId: string): DocumentRow[];
+
+  replaceCustomerNeeds(issueId: string, rows: readonly CustomerNeedRow[]): void;
+  customerNeedsFor(issueId: string): CustomerNeedRow[];
+
+  putActivityCursor(row: ActivityCursorRow): void;
+  activityCursor(issueId: string): ActivityCursorRow | null;
 
   /**
    * Echo suppression, and it happens **before** the tick rather than after.
@@ -296,7 +339,11 @@ export interface Store {
   cycles(teamId: string): CycleRow[];
   cycle(id: string): CycleRow | null;
 
+  /** Replace every relation touching this issue, in both directions, with
+   * what its detail fetch returned. */
   replaceRelations(issueId: string, rows: readonly RelationRow[]): void;
+  mergeRelations(rows: readonly RelationRow[]): void;
+  relationsFor(issueId: string): RelationDetailRow[];
   /** Identifiers of the open issues blocking each of these, in one query. The
    *  panel's second line and the Inbox both need it per page. */
   blockersFor(issueIds: readonly string[]): Map<string, string[]>;
@@ -436,6 +483,38 @@ export function createStore(db: Database): Store {
     return changed;
   });
 
+  const attachmentStatement = db.prepare(
+    `INSERT INTO attachment
+       (id, issue_id, title, subtitle, url, source_type, group_by_source,
+        created_at, updated_at, creator_id)
+     VALUES (@id, @issueId, @title, @subtitle, @url, @sourceType, @groupBySource,
+             @createdAt, @updatedAt, @creatorId)
+     ON CONFLICT(id) DO UPDATE SET
+       issue_id = excluded.issue_id, title = excluded.title,
+       subtitle = excluded.subtitle, url = excluded.url,
+       source_type = excluded.source_type,
+       group_by_source = excluded.group_by_source,
+       created_at = excluded.created_at, updated_at = excluded.updated_at,
+       creator_id = excluded.creator_id`,
+  );
+  const writeAttachments = (rows: readonly AttachmentRow[]): void => {
+    for (const row of rows) {
+      attachmentStatement.run({ ...row, groupBySource: toInt(row.groupBySource) });
+    }
+  };
+
+  const reactionStatement = db.prepare(
+    `INSERT INTO reaction (id, issue_id, comment_id, emoji, user_id, created_at)
+     VALUES (@id, @issueId, @commentId, @emoji, @userId, @createdAt)
+     ON CONFLICT(id) DO UPDATE SET
+       issue_id = excluded.issue_id, comment_id = excluded.comment_id,
+       emoji = excluded.emoji, user_id = excluded.user_id,
+       created_at = excluded.created_at`,
+  );
+  const writeReactions = (rows: readonly ReactionRow[]): void => {
+    for (const row of rows) reactionStatement.run(row);
+  };
+
   function buildIssueWhere(filter: IssueFilter): { sql: string; params: unknown[] } {
     const clauses: string[] = [];
     const params: unknown[] = [];
@@ -447,6 +526,13 @@ export function createStore(db: Database): Store {
     // project — not "everything".
     clauses.push(`issue.team_id IN (${placeholders(filter.teamIds.length)})`);
     params.push(...filter.teamIds);
+
+    // Detail fetches may create two deliberately incomplete row shapes. Child
+    // stubs have a parent_id and have always participated in list/search/count
+    // surfaces; parent/relation join stubs do not. Linear issue numbers start
+    // at 1, so this keeps only the new detached placeholders out without
+    // changing the existing child path.
+    clauses.push(`(issue.number > 0 OR issue.parent_id IS NOT NULL)`);
 
     if (!filter.includeArchived) clauses.push("issue.archived_at IS NULL");
 
@@ -613,12 +699,21 @@ export function createStore(db: Database): Store {
         ).map((row) => row.id);
         if (teamIds.length > 0) {
           const marks = placeholders(teamIds.length);
+          const issueScope = `SELECT id FROM issue WHERE team_id IN (${marks})`;
+          db.prepare(`DELETE FROM attachment WHERE issue_id IN (${issueScope})`).run(...teamIds);
+          db.prepare(`DELETE FROM issue_history WHERE issue_id IN (${issueScope})`).run(...teamIds);
+          db.prepare(`DELETE FROM reaction WHERE issue_id IN (${issueScope})`).run(...teamIds);
+          db.prepare(`DELETE FROM subscriber WHERE issue_id IN (${issueScope})`).run(...teamIds);
+          db.prepare(`DELETE FROM document WHERE issue_id IN (${issueScope})`).run(...teamIds);
+          db.prepare(`DELETE FROM customer_need WHERE issue_id IN (${issueScope})`).run(...teamIds);
+          db.prepare(`DELETE FROM activity_cursor WHERE issue_id IN (${issueScope})`).run(...teamIds);
           db.prepare(
             `DELETE FROM comment WHERE issue_id IN (SELECT id FROM issue WHERE team_id IN (${marks}))`,
           ).run(...teamIds);
           db.prepare(
-            `DELETE FROM relation WHERE issue_id IN (SELECT id FROM issue WHERE team_id IN (${marks}))`,
-          ).run(...teamIds);
+            `DELETE FROM relation
+              WHERE issue_id IN (${issueScope}) OR related_issue_id IN (${issueScope})`,
+          ).run(...teamIds, ...teamIds);
           db.prepare(
             `DELETE FROM issue_previous_identifier
               WHERE issue_id IN (SELECT id FROM issue WHERE team_id IN (${marks}))`,
@@ -1250,15 +1345,18 @@ export function createStore(db: Database): Store {
       );
       const statement = db.prepare(
         `INSERT INTO comment (id, issue_id, user_id, parent_id, body, url,
-                              created_at, updated_at, edited_at, resolved_at)
+                              created_at, updated_at, edited_at, resolved_at,
+                              resolving_user_id)
          VALUES (@id, @issueId, @userId, @parentId, @body, @url,
-                 @createdAt, @updatedAt, @editedAt, @resolvedAt)
+                 @createdAt, @updatedAt, @editedAt, @resolvedAt,
+                 @resolvingUserId)
          ON CONFLICT(id) DO UPDATE SET
            issue_id = excluded.issue_id, user_id = excluded.user_id,
            parent_id = excluded.parent_id, body = excluded.body,
            url = excluded.url, created_at = excluded.created_at,
            updated_at = excluded.updated_at, edited_at = excluded.edited_at,
-           resolved_at = excluded.resolved_at`,
+           resolved_at = excluded.resolved_at,
+           resolving_user_id = excluded.resolving_user_id`,
       );
       return db.transaction(() => {
         let changed = 0;
@@ -1267,7 +1365,7 @@ export function createStore(db: Database): Store {
             | { updatedAt: number }
             | undefined;
           if (existing === undefined || existing.updatedAt !== comment.updatedAt) changed += 1;
-          statement.run(comment);
+          statement.run({ ...comment, resolvingUserId: comment.resolvingUserId ?? null });
         }
         return changed;
       })();
@@ -1278,10 +1376,247 @@ export function createStore(db: Database): Store {
         .prepare(
           `SELECT id, issue_id AS issueId, user_id AS userId, parent_id AS parentId,
                   body, url, created_at AS createdAt, updated_at AS updatedAt,
-                  edited_at AS editedAt, resolved_at AS resolvedAt
+                  edited_at AS editedAt, resolved_at AS resolvedAt,
+                  resolving_user_id AS resolvingUserId
              FROM comment WHERE issue_id = ? ORDER BY created_at`,
         )
         .all(issueId) as CommentRow[];
+    },
+
+    commentIssueId(commentId) {
+      const row = db
+        .prepare(`SELECT issue_id AS issueId FROM comment WHERE id = ?`)
+        .get(commentId) as { issueId: string } | undefined;
+      return row?.issueId ?? null;
+    },
+
+    reconcileCommentsWindow(issueId, fetchedIds, windowStart, windowEnd) {
+      const clauses = [`issue_id = ?`, `created_at IS NOT NULL`];
+      const values: Array<string | number> = [issueId];
+      if (windowStart !== null) {
+        clauses.push(`created_at >= ?`);
+        values.push(windowStart);
+      }
+      if (windowEnd !== null) {
+        clauses.push(`created_at <= ?`);
+        values.push(windowEnd);
+      }
+      if (fetchedIds.length > 0) {
+        clauses.push(`id NOT IN (${placeholders(fetchedIds.length)})`);
+        values.push(...fetchedIds);
+      }
+      const where = clauses.join(" AND ");
+      return db.transaction(() => {
+        // Reactions are intentionally not foreign-key cascaded: comment rows
+        // predate the reaction table. Remove dependants in the same windowed
+        // reconciliation so a deleted comment cannot leave visible orphans.
+        db.prepare(
+          `DELETE FROM reaction
+            WHERE comment_id IN (SELECT id FROM comment WHERE ${where})`,
+        ).run(...values);
+        return db.prepare(`DELETE FROM comment WHERE ${where}`).run(...values).changes;
+      })();
+    },
+
+    replaceAttachments(issueId, rows) {
+      db.transaction(() => {
+        db.prepare(`DELETE FROM attachment WHERE issue_id = ?`).run(issueId);
+        writeAttachments(rows);
+      })();
+    },
+
+    mergeAttachments(rows) {
+      db.transaction(() => writeAttachments(rows))();
+    },
+
+    attachmentsFor(issueId) {
+      const rows = db
+        .prepare(
+          `SELECT id, issue_id AS issueId, title, subtitle, url,
+                  source_type AS sourceType, group_by_source AS groupBySource,
+                  created_at AS createdAt, updated_at AS updatedAt,
+                  creator_id AS creatorId
+             FROM attachment WHERE issue_id = ? ORDER BY created_at DESC`,
+        )
+        .all(issueId) as RawAttachment[];
+      return rows.map((row) => ({ ...row, groupBySource: bool(row.groupBySource) }));
+    },
+
+    putHistory(rows) {
+      const statement = db.prepare(
+        `INSERT INTO issue_history
+           (id, issue_id, created_at, actor_id, bot_name, kind, payload)
+         VALUES (@id, @issueId, @createdAt, @actorId, @botName, @kind, @payload)
+         ON CONFLICT(id) DO UPDATE SET
+           issue_id = excluded.issue_id, created_at = excluded.created_at,
+           actor_id = excluded.actor_id, bot_name = excluded.bot_name,
+           kind = excluded.kind, payload = excluded.payload`,
+      );
+      db.transaction(() => {
+        for (const row of rows) statement.run({ ...row, payload: JSON.stringify(row.payload) });
+      })();
+    },
+
+    historyFor(issueId, options) {
+      const limit = Math.max(1, Math.floor(options?.limit ?? 500));
+      const rows = db
+        .prepare(
+          `SELECT id, issue_id AS issueId, created_at AS createdAt,
+                  actor_id AS actorId, bot_name AS botName, kind, payload
+             FROM issue_history WHERE issue_id = ?
+            ORDER BY created_at DESC, id DESC LIMIT ?`,
+        )
+        .all(issueId, limit) as RawHistory[];
+      return rows.reverse().map(hydrateHistory);
+    },
+
+    replaceReactions(issueId, rows, fetchedCommentIds) {
+      db.transaction(() => {
+        if (fetchedCommentIds === undefined) {
+          db.prepare(`DELETE FROM reaction WHERE issue_id = ?`).run(issueId);
+        } else {
+          db.prepare(`DELETE FROM reaction WHERE issue_id = ? AND comment_id IS NULL`).run(issueId);
+          if (fetchedCommentIds.length > 0) {
+            db.prepare(
+              `DELETE FROM reaction
+                WHERE issue_id = ? AND comment_id IN (${placeholders(fetchedCommentIds.length)})`,
+            ).run(issueId, ...fetchedCommentIds);
+          }
+        }
+        writeReactions(rows);
+      })();
+    },
+
+    mergeReactions(rows) {
+      db.transaction(() => writeReactions(rows))();
+    },
+
+    reactionsFor(issueId) {
+      return db
+        .prepare(
+          `SELECT id, issue_id AS issueId, comment_id AS commentId, emoji,
+                  user_id AS userId, created_at AS createdAt
+             FROM reaction
+            WHERE issue_id = ?
+              AND (comment_id IS NULL OR EXISTS (
+                SELECT 1 FROM comment WHERE comment.id = reaction.comment_id
+              ))
+            ORDER BY created_at, id`,
+        )
+        .all(issueId) as ReactionRow[];
+    },
+
+    replaceSubscribers(issueId, userIds) {
+      const statement = db.prepare(
+        `INSERT OR IGNORE INTO subscriber (issue_id, user_id) VALUES (?, ?)`,
+      );
+      db.transaction(() => {
+        db.prepare(`DELETE FROM subscriber WHERE issue_id = ?`).run(issueId);
+        for (const userId of userIds) statement.run(issueId, userId);
+      })();
+    },
+
+    subscribersFor(issueId) {
+      return (
+        db
+          .prepare(`SELECT user_id AS userId FROM subscriber WHERE issue_id = ? ORDER BY user_id`)
+          .all(issueId) as { userId: string }[]
+      ).map((row) => row.userId);
+    },
+
+    replaceDocuments(issueId, rows) {
+      const statement = db.prepare(
+        `INSERT INTO document (id, issue_id, title, url, updated_at, icon, color)
+         VALUES (@id, @issueId, @title, @url, @updatedAt, @icon, @color)
+         ON CONFLICT(id) DO UPDATE SET
+           issue_id = excluded.issue_id,
+           title = excluded.title,
+           url = excluded.url,
+           updated_at = excluded.updated_at,
+           icon = excluded.icon,
+           color = excluded.color`,
+      );
+      db.transaction(() => {
+        db.prepare(`DELETE FROM document WHERE issue_id = ?`).run(issueId);
+        for (const row of rows) statement.run(row);
+      })();
+    },
+
+    documentsFor(issueId) {
+      return db
+        .prepare(
+          `SELECT id, issue_id AS issueId, title, url, updated_at AS updatedAt,
+                  icon, color FROM document WHERE issue_id = ? ORDER BY updated_at DESC`,
+        )
+        .all(issueId) as DocumentRow[];
+    },
+
+    replaceCustomerNeeds(issueId, rows) {
+      const statement = db.prepare(
+        `INSERT INTO customer_need
+           (id, issue_id, customer_name, priority, body, url, created_at)
+         VALUES (@id, @issueId, @customerName, @priority, @body, @url, @createdAt)
+         ON CONFLICT(id) DO UPDATE SET
+           issue_id = excluded.issue_id,
+           customer_name = excluded.customer_name,
+           priority = excluded.priority,
+           body = excluded.body,
+           url = excluded.url,
+           created_at = excluded.created_at`,
+      );
+      db.transaction(() => {
+        db.prepare(`DELETE FROM customer_need WHERE issue_id = ?`).run(issueId);
+        for (const row of rows) statement.run(row);
+      })();
+    },
+
+    customerNeedsFor(issueId) {
+      return db
+        .prepare(
+          `SELECT id, issue_id AS issueId, customer_name AS customerName, priority,
+                  body, url, created_at AS createdAt
+             FROM customer_need WHERE issue_id = ? ORDER BY priority DESC, created_at DESC`,
+        )
+        .all(issueId) as CustomerNeedRow[];
+    },
+
+    putActivityCursor(row) {
+      db.prepare(
+        `INSERT INTO activity_cursor
+           (issue_id, comments_cursor, comments_more, history_cursor, history_more, direction)
+         VALUES (@issueId, @commentsCursor, @commentsMore, @historyCursor, @historyMore, @direction)
+         ON CONFLICT(issue_id) DO UPDATE SET
+           comments_cursor = excluded.comments_cursor,
+           comments_more = excluded.comments_more,
+           history_cursor = excluded.history_cursor,
+           history_more = excluded.history_more,
+           direction = excluded.direction`,
+      ).run({
+        ...row,
+        commentsMore: toInt(row.commentsMore),
+        historyMore: toInt(row.historyMore),
+      });
+    },
+
+    activityCursor(issueId) {
+      const row = db
+        .prepare(
+          `SELECT issue_id AS issueId, comments_cursor AS commentsCursor,
+                  comments_more AS commentsMore, history_cursor AS historyCursor,
+                  history_more AS historyMore, direction
+             FROM activity_cursor WHERE issue_id = ?`,
+        )
+        .get(issueId) as RawActivityCursor | undefined;
+      return row === undefined
+        ? null
+        : {
+            ...row,
+            commentsMore: bool(row.commentsMore),
+            historyMore: bool(row.historyMore),
+            // "after" is the only direction the apply path writes; a corrupted
+            // row must not send the older-activity page the wrong way.
+            direction: row.direction === "before" ? "before" : "after",
+          };
     },
 
     recordEcho(entityId, updatedAt, at) {
@@ -1305,20 +1640,20 @@ export function createStore(db: Database): Store {
 
     putInbox(rows) {
       const statement = db.prepare(
-        `INSERT INTO inbox (key, workspace_id, kind, issue_id, team_id, actor_id, title, body, url,
+        `INSERT INTO inbox (key, workspace_id, kind, issue_id, comment_id, team_id, actor_id, title, body, url,
                             created_at, seen_at, dismissed_at, linear_read_at)
-         VALUES (@key, @workspaceId, @kind, @issueId, @teamId, @actorId, @title, @body, @url,
+         VALUES (@key, @workspaceId, @kind, @issueId, @commentId, @teamId, @actorId, @title, @body, @url,
                  @createdAt, @seenAt, @dismissedAt, @linearReadAt)
          ON CONFLICT(key) DO UPDATE SET
            workspace_id = excluded.workspace_id, kind = excluded.kind,
-           issue_id = excluded.issue_id,
+           issue_id = excluded.issue_id, comment_id = excluded.comment_id,
            team_id = excluded.team_id, actor_id = excluded.actor_id,
            title = excluded.title, body = excluded.body, url = excluded.url,
            created_at = excluded.created_at,
            linear_read_at = excluded.linear_read_at`,
       );
       db.transaction(() => {
-        for (const row of rows) statement.run(row);
+        for (const row of rows) statement.run({ ...row, commentId: row.commentId ?? null });
       })();
     },
 
@@ -1327,7 +1662,8 @@ export function createStore(db: Database): Store {
       return db
         .prepare(
           `SELECT key, workspace_id AS workspaceId, kind,
-                  issue_id AS issueId, team_id AS teamId, actor_id AS actorId,
+                  issue_id AS issueId, comment_id AS commentId,
+                  team_id AS teamId, actor_id AS actorId,
                   title, body, url, created_at AS createdAt, seen_at AS seenAt,
                   dismissed_at AS dismissedAt, linear_read_at AS linearReadAt
              FROM inbox ${where}
@@ -1515,16 +1851,56 @@ export function createStore(db: Database): Store {
 
     replaceRelations(issueId, rows) {
       db.transaction(() => {
-        // Replaced rather than upserted: a relation removed in Linear has no
-        // tombstone, and a stale one produces a "blocked by" line about
-        // something that is no longer blocking anything.
-        db.prepare(`DELETE FROM relation WHERE issue_id = ?`).run(issueId);
+        // A detail fetch sees both directions for THIS issue, so both sides
+        // scoped to it are replaced: a relation removed in Linear must vanish
+        // from the blocked issue's "Blocked by" line too, not only from the
+        // declaring issue's page. Rows between two other issues are untouched.
+        db.prepare(`DELETE FROM relation WHERE issue_id = ? OR related_issue_id = ?`).run(
+          issueId,
+          issueId,
+        );
         const statement = db.prepare(
           `INSERT OR REPLACE INTO relation (id, issue_id, related_issue_id, type)
            VALUES (@id, @issueId, @relatedIssueId, @type)`,
         );
         for (const row of rows) statement.run(row);
       })();
+    },
+
+    mergeRelations(rows) {
+      const statement = db.prepare(
+        `INSERT INTO relation (id, issue_id, related_issue_id, type)
+         VALUES (@id, @issueId, @relatedIssueId, @type)
+         ON CONFLICT(id) DO UPDATE SET
+           issue_id = excluded.issue_id,
+           related_issue_id = excluded.related_issue_id,
+           type = excluded.type`,
+      );
+      db.transaction(() => {
+        for (const row of rows) statement.run(row);
+      })();
+    },
+
+    relationsFor(issueId) {
+      const rows = db
+        .prepare(
+          `SELECT relation.id, relation.issue_id AS issueId,
+                  relation.related_issue_id AS relatedIssueId, relation.type,
+                  CASE WHEN relation.issue_id = ? THEN 0 ELSE 1 END AS inverse,
+                  CASE WHEN relation.issue_id = ?
+                       THEN relation.related_issue_id ELSE relation.issue_id END AS counterpartId,
+                  counterpart.identifier, counterpart.title,
+                  counterpart.state_id AS stateId, state.type AS stateType
+             FROM relation
+             LEFT JOIN issue AS counterpart ON counterpart.id =
+               CASE WHEN relation.issue_id = ?
+                    THEN relation.related_issue_id ELSE relation.issue_id END
+             LEFT JOIN workflow_state AS state ON state.id = counterpart.state_id
+            WHERE relation.issue_id = ? OR relation.related_issue_id = ?
+            ORDER BY relation.type, counterpart.identifier`,
+        )
+        .all(issueId, issueId, issueId, issueId, issueId) as RawRelationDetail[];
+      return rows.map((row) => ({ ...row, inverse: bool(row.inverse) }));
     },
 
     blockersFor(issueIds) {
@@ -1807,6 +2183,32 @@ export function createStore(db: Database): Store {
       })();
     },
   };
+}
+
+type RawAttachment = Omit<AttachmentRow, "groupBySource"> & { groupBySource: number };
+type RawHistory = Omit<HistoryEventRow, "payload"> & { payload: string };
+type RawActivityCursor = Omit<
+  ActivityCursorRow,
+  "commentsMore" | "historyMore" | "direction"
+> & {
+  commentsMore: number;
+  historyMore: number;
+  direction: string;
+};
+type RawRelationDetail = Omit<RelationDetailRow, "inverse"> & { inverse: number };
+
+function hydrateHistory(row: RawHistory): HistoryEventRow {
+  let payload: Readonly<Record<string, unknown>> = {};
+  try {
+    const parsed: unknown = JSON.parse(row.payload);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      payload = parsed as Readonly<Record<string, unknown>>;
+    }
+  } catch {
+    // A future or interrupted writer cannot take down the issue pane. The
+    // stable kind remains renderable with an empty detail payload.
+  }
+  return { ...row, payload };
 }
 
 /** SQLite has no boolean: these four arrive as 0 or 1. */

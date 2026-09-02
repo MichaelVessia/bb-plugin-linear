@@ -1,5 +1,11 @@
 import { estimateComplexity, SELF_IMPOSED_COMPLEXITY_BUDGET } from "../linear/complexity.js";
-import { TICK, TICK_COMMENT_PAGE_SIZE, TICK_ISSUE_PAGE_SIZE } from "../linear/documents.js";
+import {
+  TICK,
+  TICK_ATTACHMENT_PAGE_SIZE,
+  TICK_COMMENT_PAGE_SIZE,
+  TICK_ISSUE_PAGE_SIZE,
+  TICK_RELATED_PAGE_SIZE,
+} from "../linear/documents.js";
 
 /**
  * Deciding what one tick asks for.
@@ -55,28 +61,46 @@ export function planTick(input: {
   readonly issuesSince: string;
   readonly commentsSince: string;
   readonly tickNumber: number;
+  /** Test seam for proving the fitter terminates below a tighter budget. */
+  readonly complexityBudget?: number;
 }): TickPlan {
-  const variablesFor = (teamIds: readonly string[]): Record<string, unknown> => ({
+  const variablesFor = (
+    teamIds: readonly string[],
+    issuePageSize: number,
+  ): Record<string, unknown> => ({
     teamIds: [...teamIds],
     issuesSince: input.issuesSince,
     commentsSince: input.commentsSince,
-    issues: TICK_ISSUE_PAGE_SIZE,
+    issues: issuePageSize,
     comments: TICK_COMMENT_PAGE_SIZE,
+    issueAttachments: TICK_ATTACHMENT_PAGE_SIZE,
+    issueRelations: TICK_RELATED_PAGE_SIZE,
   });
 
-  // The document's shape does not change with the team count — the team ids
-  // travel as a variable — so the estimate is the same for one team and forty.
-  // Sharding is therefore driven by the *page sizes*, and the cost is computed
-  // once.
-  const estimate = estimateComplexity(TICK.source, TICK.pageSizes ?? {});
-
+  const budget = input.complexityBudget ?? SELF_IMPOSED_COMPLEXITY_BUDGET;
   let shardCount = 1;
-  while (
-    estimate > SELF_IMPOSED_COMPLEXITY_BUDGET &&
-    shardCount < input.teamIds.length &&
-    shardCount < 8
-  ) {
-    shardCount += 1;
+  let issuePageSize = TICK_ISSUE_PAGE_SIZE;
+  let estimate = estimateComplexity(TICK.source, {
+    ...(TICK.pageSizes ?? {}),
+    issues: issuePageSize,
+  });
+
+  // Team ids are variables, so sharding alone cannot lower GraphQL
+  // complexity. A shard derives a proportionally smaller issue page, and a
+  // single-team plan halves the page directly. The estimate is recomputed on
+  // every iteration; once the page reaches one the loop terminates even under
+  // an artificially impossible test budget.
+  while (estimate > budget && issuePageSize > 1) {
+    if (shardCount < input.teamIds.length && shardCount < 8) {
+      shardCount += 1;
+      issuePageSize = Math.max(1, Math.ceil(TICK_ISSUE_PAGE_SIZE / shardCount));
+    } else {
+      issuePageSize = Math.max(1, Math.floor(issuePageSize / 2));
+    }
+    estimate = estimateComplexity(TICK.source, {
+      ...(TICK.pageSizes ?? {}),
+      issues: issuePageSize,
+    });
   }
 
   const teamIds = shardTeams(input.teamIds, shardCount, input.tickNumber);
@@ -84,7 +108,7 @@ export function planTick(input: {
     teamIds,
     shardCount,
     estimatedComplexity: estimate,
-    variables: variablesFor(teamIds),
+    variables: variablesFor(teamIds, issuePageSize),
   };
 }
 

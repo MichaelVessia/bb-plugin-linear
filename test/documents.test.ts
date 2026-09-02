@@ -12,7 +12,12 @@ import {
   type GraphQLSchema,
 } from "graphql";
 import { describe, expect, it } from "vitest";
-import { DOCUMENTS } from "../src/linear/documents.js";
+import {
+  DOCUMENTS,
+  ISSUE_ACTIVITY_PAGE,
+  ISSUE_DETAIL,
+  TICK,
+} from "../src/linear/documents.js";
 import {
   estimateComplexity,
   LINEAR_QUERY_COMPLEXITY_CEILING,
@@ -136,4 +141,28 @@ describe("every shipped document", () => {
       });
     });
   }
+});
+
+describe("pane read document budgets", () => {
+  it("reads the newest detail page and advances older activity with first and after", () => {
+    expect(ISSUE_DETAIL.source).toContain("comments(first: $comments)");
+    expect(ISSUE_DETAIL.source).toContain("history(first: $history)");
+    expect(ISSUE_DETAIL.source).not.toMatch(/(?:comments|history)\(last:/);
+    expect(ISSUE_ACTIVITY_PAGE.source).toContain("first: $comments");
+    expect(ISSUE_ACTIVITY_PAGE.source).toContain("after: $commentsAfter");
+    expect(ISSUE_ACTIVITY_PAGE.source).toContain("first: $history");
+    expect(ISSUE_ACTIVITY_PAGE.source).toContain("after: $historyAfter");
+    expect(ISSUE_ACTIVITY_PAGE.source).not.toMatch(/\b(?:last|before):/);
+  });
+
+  it("records the expanded detail and tick costs", () => {
+    expect(estimateComplexity(ISSUE_DETAIL.source, ISSUE_DETAIL.pageSizes ?? {})).toBeCloseTo(
+      1_984,
+      5,
+    );
+    expect(estimateComplexity(TICK.source, TICK.pageSizes ?? {})).toBeCloseTo(5_867, 5);
+    expect(estimateComplexity(TICK.source, TICK.pageSizes ?? {})).toBeLessThan(
+      SELF_IMPOSED_COMPLEXITY_BUDGET,
+    );
+  });
 });

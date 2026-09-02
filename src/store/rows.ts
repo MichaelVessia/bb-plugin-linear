@@ -175,6 +175,7 @@ export interface CommentRow {
   readonly updatedAt: number;
   readonly editedAt: number | null;
   readonly resolvedAt: number | null;
+  readonly resolvingUserId?: string | null;
 }
 
 export type ThreadLinkOrigin = "spawn" | "manual" | "branch" | "message";
@@ -193,6 +194,7 @@ export interface InboxRowRecord {
   readonly workspaceId: string;
   readonly kind: string;
   readonly issueId: string | null;
+  readonly commentId: string | null;
   readonly teamId: string | null;
   readonly actorId: string | null;
   readonly title: string;
@@ -280,4 +282,95 @@ export interface RelationRow {
   readonly issueId: string;
   readonly relatedIssueId: string;
   readonly type: string;
+}
+
+export interface AttachmentRow {
+  readonly id: string;
+  readonly issueId: string;
+  readonly title: string;
+  readonly subtitle: string | null;
+  readonly url: string;
+  readonly sourceType: string | null;
+  readonly groupBySource: boolean;
+  readonly createdAt: number | null;
+  readonly updatedAt: number | null;
+  readonly creatorId: string | null;
+}
+
+export type HistoryKind =
+  | "state"
+  | "assignee"
+  | "priority"
+  | "estimate"
+  | "dueDate"
+  | "project"
+  | "cycle"
+  | "parent"
+  | "title"
+  | "description"
+  | "labels"
+  | "attachment"
+  | "relations"
+  | "archived"
+  | "trashed"
+  | "team"
+  | "milestone";
+
+export interface HistoryEventRow {
+  readonly id: string;
+  readonly issueId: string;
+  readonly createdAt: number;
+  readonly actorId: string | null;
+  readonly botName: string | null;
+  readonly kind: HistoryKind;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
+export interface ReactionRow {
+  readonly id: string;
+  readonly issueId: string;
+  readonly commentId: string | null;
+  readonly emoji: string;
+  readonly userId: string | null;
+  readonly createdAt: number | null;
+}
+
+export interface DocumentRow {
+  readonly id: string;
+  readonly issueId: string;
+  readonly title: string;
+  readonly url: string;
+  readonly updatedAt: number | null;
+  readonly icon: string | null;
+  readonly color: string | null;
+}
+
+export interface CustomerNeedRow {
+  readonly id: string;
+  readonly issueId: string;
+  readonly customerName: string | null;
+  readonly priority: number;
+  readonly body: string | null;
+  readonly url: string | null;
+  readonly createdAt: number | null;
+}
+
+export interface ActivityCursorRow {
+  readonly issueId: string;
+  readonly commentsCursor: string | null;
+  readonly commentsMore: boolean;
+  readonly historyCursor: string | null;
+  readonly historyMore: boolean;
+  readonly direction: "before" | "after";
+}
+
+/** One relation as seen from the requested issue, with its counterpart joined
+ * to the mirror. `inverse` means the counterpart declared the relation. */
+export interface RelationDetailRow extends RelationRow {
+  readonly inverse: boolean;
+  readonly counterpartId: string;
+  readonly identifier: string | null;
+  readonly title: string | null;
+  readonly stateId: string | null;
+  readonly stateType: string | null;
 }

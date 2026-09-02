@@ -52,6 +52,366 @@ describe("mirror change counts", () => {
   });
 });
 
+describe("issue pane mirror rows", () => {
+  it("round-trips every new resource and replaces stale rows", () => {
+    const store = createTestStore();
+    store.putIssues(
+      [issue({ id: "i1" }), issue({ id: "i2", identifier: "ENG-2", title: "Blocker" })],
+      NOW,
+    );
+    store.replaceWorkflowStates("team_eng", [state("open", "team_eng", "started")]);
+    store.putIssues([issue({ id: "i2", identifier: "ENG-2", title: "Blocker", stateId: "open" })], NOW);
+
+    store.replaceAttachments("i1", [
+      {
+        id: "a1",
+        issueId: "i1",
+        title: "Spec",
+        subtitle: null,
+        url: "https://example.invalid/spec",
+        sourceType: "link",
+        groupBySource: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+        creatorId: null,
+      },
+      {
+        id: "stale",
+        issueId: "i1",
+        title: "Old",
+        subtitle: null,
+        url: "https://example.invalid/old",
+        sourceType: null,
+        groupBySource: false,
+        createdAt: NOW - 1,
+        updatedAt: NOW - 1,
+        creatorId: null,
+      },
+    ]);
+    store.replaceAttachments("i1", [
+      {
+        id: "a1",
+        issueId: "i1",
+        title: "Spec",
+        subtitle: "Updated",
+        url: "https://example.invalid/spec",
+        sourceType: "link",
+        groupBySource: true,
+        createdAt: NOW,
+        updatedAt: NOW + 1,
+        creatorId: "u1",
+      },
+    ]);
+    expect(store.attachmentsFor("i1")).toEqual([
+      expect.objectContaining({ id: "a1", subtitle: "Updated", groupBySource: true }),
+    ]);
+
+    store.putHistory([
+      {
+        id: "h1:state",
+        issueId: "i1",
+        createdAt: NOW,
+        actorId: "u1",
+        botName: null,
+        kind: "state",
+        payload: { from: "todo", to: "open" },
+      },
+    ]);
+    store.putHistory([
+      {
+        id: "h1:state",
+        issueId: "i1",
+        createdAt: NOW,
+        actorId: "u1",
+        botName: null,
+        kind: "state",
+        payload: { from: "todo", to: "done" },
+      },
+    ]);
+    expect(store.historyFor("i1")).toEqual([
+      expect.objectContaining({ id: "h1:state", payload: { from: "todo", to: "done" } }),
+    ]);
+
+    store.replaceReactions("i1", [
+      {
+        id: "r1",
+        issueId: "i1",
+        commentId: null,
+        emoji: "thumbsup",
+        userId: "u1",
+        createdAt: NOW,
+      },
+      {
+        id: "stale-reaction",
+        issueId: "i1",
+        commentId: null,
+        emoji: "eyes",
+        userId: null,
+        createdAt: NOW - 1,
+      },
+    ]);
+    store.replaceReactions("i1", [
+      {
+        id: "r1",
+        issueId: "i1",
+        commentId: null,
+        emoji: "thumbsup",
+        userId: "u1",
+        createdAt: NOW,
+      },
+    ]);
+    expect(store.reactionsFor("i1").map((row) => row.id)).toEqual(["r1"]);
+
+    store.replaceSubscribers("i1", ["u2", "u1"]);
+    store.replaceSubscribers("i1", ["u2"]);
+    expect(store.subscribersFor("i1")).toEqual(["u2"]);
+
+    store.replaceDocuments("i1", [
+      {
+        id: "d1",
+        issueId: "i1",
+        title: "Decision",
+        url: "https://example.invalid/doc",
+        updatedAt: NOW,
+        icon: null,
+        color: null,
+      },
+      {
+        id: "stale-document",
+        issueId: "i1",
+        title: "Old decision",
+        url: "https://example.invalid/old-doc",
+        updatedAt: NOW - 1,
+        icon: null,
+        color: null,
+      },
+    ]);
+    store.replaceDocuments("i1", [
+      {
+        id: "d1",
+        issueId: "i1",
+        title: "Decision",
+        url: "https://example.invalid/doc",
+        updatedAt: NOW,
+        icon: null,
+        color: null,
+      },
+    ]);
+    expect(store.documentsFor("i1").map((row) => row.id)).toEqual(["d1"]);
+    store.replaceDocuments("i2", [
+      {
+        id: "d1",
+        issueId: "i2",
+        title: "Moved decision",
+        url: "https://example.invalid/doc",
+        updatedAt: NOW + 1,
+        icon: "document",
+        color: "#123456",
+      },
+    ]);
+    expect(store.documentsFor("i1")).toEqual([]);
+    expect(store.documentsFor("i2")).toEqual([
+      expect.objectContaining({ id: "d1", issueId: "i2", title: "Moved decision" }),
+    ]);
+
+    store.replaceCustomerNeeds("i1", [
+      {
+        id: "n1",
+        issueId: "i1",
+        customerName: "Customer",
+        priority: 2,
+        body: "Please ship it",
+        url: "https://example.invalid/need",
+        createdAt: NOW,
+      },
+      {
+        id: "stale-need",
+        issueId: "i1",
+        customerName: "Former customer",
+        priority: 1,
+        body: "Old request",
+        url: "https://example.invalid/old-need",
+        createdAt: NOW - 1,
+      },
+    ]);
+    store.replaceCustomerNeeds("i1", [
+      {
+        id: "n1",
+        issueId: "i1",
+        customerName: "Customer",
+        priority: 2,
+        body: "Please ship it",
+        url: "https://example.invalid/need",
+        createdAt: NOW,
+      },
+    ]);
+    expect(store.customerNeedsFor("i1").map((row) => row.id)).toEqual(["n1"]);
+    store.replaceCustomerNeeds("i2", [
+      {
+        id: "n1",
+        issueId: "i2",
+        customerName: "Customer",
+        priority: 3,
+        body: "Moved request",
+        url: "https://example.invalid/need",
+        createdAt: NOW,
+      },
+    ]);
+    expect(store.customerNeedsFor("i1")).toEqual([]);
+    expect(store.customerNeedsFor("i2")).toEqual([
+      expect.objectContaining({ id: "n1", issueId: "i2", priority: 3 }),
+    ]);
+
+    store.putComments([
+      {
+        id: "comment-for-reaction",
+        issueId: "i2",
+        userId: null,
+        parentId: null,
+        body: "React here",
+        url: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+        editedAt: null,
+        resolvedAt: null,
+        resolvingUserId: null,
+      },
+    ]);
+    expect(store.commentIssueId("comment-for-reaction")).toBe("i2");
+    expect(store.commentIssueId("missing-comment")).toBeNull();
+
+    store.replaceRelations("i1", [
+      { id: "outgoing", issueId: "i1", relatedIssueId: "i2", type: "related" },
+      { id: "rel", issueId: "i2", relatedIssueId: "i1", type: "blocks" },
+    ]);
+    expect(store.relationsFor("i1")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "rel",
+          inverse: true,
+          counterpartId: "i2",
+          identifier: "ENG-2",
+          title: "Blocker",
+          stateType: "started",
+        }),
+        expect.objectContaining({ id: "outgoing", inverse: false }),
+      ]),
+    );
+    expect(store.blockersFor(["i1"]).get("i1")).toEqual(["ENG-2"]);
+    // A relation removed in Linear disappears from the blocked side too.
+    store.replaceRelations("i1", []);
+    expect(store.relationsFor("i1")).toEqual([]);
+    expect(store.blockersFor(["i1"]).get("i1") ?? []).toEqual([]);
+
+    store.putActivityCursor({
+      issueId: "i1",
+      commentsCursor: "cc",
+      commentsMore: true,
+      historyCursor: "hc",
+      historyMore: false,
+      direction: "before",
+    });
+    expect(store.activityCursor("i1")).toEqual({
+      issueId: "i1",
+      commentsCursor: "cc",
+      commentsMore: true,
+      historyCursor: "hc",
+      historyMore: false,
+      direction: "before",
+    });
+  });
+
+  it("merges tick resources without dropping rows outside the small tick window", () => {
+    const store = createTestStore();
+    store.replaceAttachments("i1", [
+      {
+        id: "older",
+        issueId: "i1",
+        title: "Older",
+        subtitle: null,
+        url: "https://example.invalid/older",
+        sourceType: null,
+        groupBySource: false,
+        createdAt: NOW - 1,
+        updatedAt: NOW - 1,
+        creatorId: null,
+      },
+    ]);
+    store.mergeAttachments([
+      {
+        id: "newer",
+        issueId: "i1",
+        title: "Newer",
+        subtitle: null,
+        url: "https://example.invalid/newer",
+        sourceType: null,
+        groupBySource: false,
+        createdAt: NOW,
+        updatedAt: NOW,
+        creatorId: null,
+      },
+    ]);
+    store.mergeRelations([{ id: "r1", issueId: "i1", relatedIssueId: "i2", type: "related" }]);
+    store.mergeRelations([{ id: "r2", issueId: "i1", relatedIssueId: "i3", type: "related" }]);
+    expect(store.attachmentsFor("i1").map((row) => row.id).sort()).toEqual(["newer", "older"]);
+    expect(store.relationsFor("i1").map((row) => row.id).sort()).toEqual(["r1", "r2"]);
+  });
+
+  it("reconciles only the fetched comment window and can extend it to the old side", () => {
+    const store = createTestStore();
+    const comment = (id: string, createdAt: number) => ({
+      id,
+      issueId: "i1",
+      userId: null,
+      parentId: null,
+      body: id,
+      url: null,
+      createdAt,
+      updatedAt: createdAt,
+      editedAt: null,
+      resolvedAt: null,
+      resolvingUserId: null,
+    });
+    store.putComments([
+      comment("outside-old", NOW - 100),
+      comment("kept", NOW),
+      comment("deleted-inside", NOW + 50),
+      comment("outside-new", NOW + 200),
+    ]);
+    store.replaceReactions("i1", [
+      {
+        id: "deleted-comment-reaction",
+        issueId: "i1",
+        commentId: "deleted-inside",
+        emoji: "eyes",
+        userId: null,
+        createdAt: NOW + 50,
+      },
+      {
+        id: "outside-comment-reaction",
+        issueId: "i1",
+        commentId: "outside-old",
+        emoji: "heart",
+        userId: null,
+        createdAt: NOW - 100,
+      },
+    ]);
+
+    expect(store.reconcileCommentsWindow("i1", ["kept"], NOW, NOW + 100)).toBe(1);
+    expect(store.comments("i1").map((row) => row.id)).toEqual([
+      "outside-old",
+      "kept",
+      "outside-new",
+    ]);
+    expect(store.reactionsFor("i1").map((row) => row.id)).toEqual([
+      "outside-comment-reaction",
+    ]);
+
+    expect(store.reconcileCommentsWindow("i1", ["kept"], null, NOW)).toBe(1);
+    expect(store.comments("i1").map((row) => row.id)).toEqual(["kept", "outside-new"]);
+  });
+});
+
 describe("full-text search", () => {
   it("finds an issue written through the store", () => {
     // `issue_fts` is external-content: the index holds no copy of the text and

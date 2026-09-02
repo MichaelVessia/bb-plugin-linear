@@ -111,6 +111,12 @@ export const KV = {
   budget: "budget",
   /** Account-wide UI preference. Sort only — see the persistence split. */
   sortPreference: "ui:sort",
+  /** Whether the pane includes non-comment activity entries. */
+  activityVisibility: "ui:activity",
+  /** Per-issue unread boundary. Slice B maintains the bounded index. */
+  lastOpened: (issueId: string) => `ui:last-open:${issueId}`,
+  /** The bounded list used to prune per-issue last-open records. */
+  lastOpenedIndex: "ui:last-open-index",
   /** A project whose automatic primary binding was explicitly undone. The
    *  marker survives reloads so identifier evidence cannot recreate the same
    *  scope behind the user's back; a later manual bind clears it. */

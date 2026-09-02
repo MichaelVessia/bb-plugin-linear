@@ -179,6 +179,7 @@ function applyCommentPage(
     updatedAt: parseInstant(node.updatedAt) ?? at,
     editedAt: parseInstant(node.editedAt),
     resolvedAt: parseInstant(node.resolvedAt),
+    resolvingUserId: node.resolvingUser?.id ?? null,
   }));
   // A comment whose issue is not in the mirror belongs to something outside
   // the backfill window. Dropping it is better than writing an orphan the
@@ -196,6 +197,21 @@ function applyCommentPage(
     (comment) => comment.issueId !== "" && mirroredIssueIds.has(comment.issueId),
   );
   const written = deps.store.putComments(attached);
+  const attachedCommentIds = new Set(attached.map((comment) => comment.id));
+  deps.store.mergeReactions(
+    result.comments.nodes.flatMap((comment) =>
+      !attachedCommentIds.has(comment.id)
+        ? []
+        : (comment.reactions ?? []).map((reaction) => ({
+            id: reaction.id,
+            issueId: comment.issue?.id ?? "",
+            commentId: comment.id,
+            emoji: reaction.emoji,
+            userId: reaction.user?.id ?? null,
+            createdAt: parseInstant(reaction.createdAt),
+          })),
+    ),
+  );
 
   let newest: number | null = null;
   for (const comment of attached) {
