@@ -351,8 +351,11 @@ describe("effectiveAgentWrites", () => {
 describe("the tool sets agents actually see", () => {
   const WRITE_NAMES = [
     "linear_comment",
+    "linear_comment_react",
+    "linear_comment_edit",
     "linear_issue_update",
     "linear_issue_create",
+    "linear_issue_set_parent",
     "linear_issue_relate",
     "linear_issue_attach",
     "linear_thread_start",

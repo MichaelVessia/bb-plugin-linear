@@ -287,6 +287,9 @@ export type ReactionView = z.infer<typeof reactionViewSchema>;
 const commentBaseViewSchema = z.object({
   id: z.string(),
   body: z.string(),
+  /** Unprojected Linear markdown, kept separate so editing never persists
+   * proxy URLs or display-only mention formatting. */
+  bodySource: z.string(),
   author: z.string(),
   authorInitials: z.string(),
   avatarUrl: z.string().nullable(),
@@ -298,6 +301,7 @@ const commentBaseViewSchema = z.object({
   url: z.string().nullable(),
   resolved: z.boolean(),
   resolvedBy: z.string().nullable(),
+  mine: z.boolean(),
   reactions: z.array(reactionViewSchema),
 });
 export const commentViewSchema = commentBaseViewSchema.extend({
@@ -313,6 +317,8 @@ export const relationViewSchema = z.object({
   title: z.string(),
   tone: toneSchema,
   done: z.boolean(),
+  /** Unrelating changes both ends, so both teams must be writable. */
+  removable: z.boolean(),
 });
 export type RelationView = z.infer<typeof relationViewSchema>;
 
@@ -353,10 +359,17 @@ export type SubIssueView = z.infer<typeof subIssueViewSchema>;
 
 export const detailViewSchema = z.object({
   id: z.string(),
+  /** Write affordances are absent when either the master switch or the
+   * issue's project binding refuses writes. */
+  writable: z.boolean(),
   identifier: z.string(),
+  /** Picker RPCs are scoped by Linear's opaque team id, not its display key. */
+  teamId: z.string(),
   title: z.string(),
   url: z.string().nullable(),
   description: z.string().nullable(),
+  /** The editable source before mention and image rendering transforms. */
+  descriptionSource: z.string().nullable(),
   stateId: z.string().nullable(),
   stateName: z.string(),
   tone: toneSchema,
@@ -831,12 +844,8 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.boolean(), hasOlder: z.boolean() }),
   },
 
-  /**
-   * Every mutating control renders **enabled** and fails in a sentence.
-   * Rendering them disabled before any refusal has happened would be a claim
-   * the plugin cannot substantiate — Linear does not expose a key's scopes —
-   * and hiding them would make a read-only key look like a broken build.
-   */
+  /** Mutating controls are projected only when both the master switch and the
+   * project's write scope allow them. The transport gate remains final. */
   /**
    * Every field the mutation layer can patch, and no more.
    *
@@ -867,6 +876,7 @@ export const rpcContract = defineRpcContract({
         milestoneId: z.string().nullable().optional(),
         title: z.string().min(1).optional(),
         description: z.string().optional(),
+        parentId: z.string().nullable().optional(),
         addLabelIds: z.array(z.string()).optional(),
         removeLabelIds: z.array(z.string()).optional(),
       })
@@ -908,8 +918,92 @@ export const rpcContract = defineRpcContract({
   },
 
   comment: {
-    input: z.object({ issueId: z.string().min(1), body: z.string().min(1) }).strict(),
+    input: z
+      .object({
+        issueId: z.string().min(1),
+        body: z.string().min(1),
+        parentId: z.string().optional(),
+      })
+      .strict(),
     output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  react: {
+    input: z
+      .object({
+        issueId: z.string().min(1),
+        commentId: z.string().optional(),
+        emoji: z.string().min(1),
+      })
+      .strict(),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  editComment: {
+    input: z.object({ id: z.string().min(1), body: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  deleteComment: {
+    input: z.object({ id: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  setParent: {
+    input: z
+      .object({ issueId: z.string().min(1), parentId: z.string().nullable() })
+      .strict(),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  unrelate: {
+    input: z.object({ relationId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  relate: {
+    input: z
+      .object({
+        issueId: z.string().min(1),
+        relatedIssueId: z.string().min(1),
+        type: z.enum(["blocks", "blockedBy", "related", "duplicateOf"]),
+      })
+      .strict(),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  attachLink: {
+    input: z
+      .object({
+        issueId: z.string().min(1),
+        url: z.string().url(),
+        title: z.string().optional(),
+      })
+      .strict(),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  searchIssuesForPicker: {
+    input: z.object({ teamId: z.string().min(1), query: z.string() }).strict(),
+    output: z.object({
+      issues: z.array(
+        z.object({
+          id: z.string(),
+          identifier: z.string(),
+          title: z.string(),
+          tone: toneSchema,
+        }),
+      ),
+    }),
+  },
+
+  mentionCandidates: {
+    input: z.object({ teamId: z.string().min(1), query: z.string() }).strict(),
+    output: z.object({
+      candidates: z.array(
+        z.object({ id: z.string(), displayName: z.string(), handle: z.string() }),
+      ),
+    }),
   },
 
   /**
@@ -1074,6 +1168,7 @@ export const rpcContract = defineRpcContract({
         teamId: z.string().min(1),
         title: z.string().min(1),
         description: z.string().optional(),
+        parentId: z.string().optional(),
       })
       .strict(),
     output: z.object({

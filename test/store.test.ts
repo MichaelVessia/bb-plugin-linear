@@ -290,6 +290,7 @@ describe("issue pane mirror rows", () => {
           id: "rel",
           inverse: true,
           counterpartId: "i2",
+          counterpartTeamId: "team_eng",
           identifier: "ENG-2",
           title: "Blocker",
           stateType: "started",

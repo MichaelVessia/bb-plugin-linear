@@ -43,7 +43,13 @@ import {
   attachUrl,
   clientId,
   createIssue,
+  deleteComment as deleteLinearComment,
+  editComment,
   postComment,
+  react,
+  relateIssues,
+  setParent,
+  unrelate,
   updateIssue,
   type MutationDeps,
 } from "./src/mutations.js";
@@ -59,6 +65,11 @@ import { estimateLabel, estimateScale, selectDetail } from "./src/select/detail.
 import { initialsOf } from "./src/select/panel.js";
 import { toneForStateType } from "./src/select/tone.js";
 import { issueDetailText } from "./src/tools-format.js";
+import {
+  mentionCandidates,
+  relationCreateInput,
+  searchIssuesForPicker,
+} from "./src/pane-write.js";
 import { registerMentionProviders } from "./src/mentions.js";
 import { issueNeedsRefresh, registerTools } from "./src/tools.js";
 import { fetchLinearImage, resolveImageAccess } from "./src/image-proxy.js";
@@ -1376,6 +1387,10 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         now,
         advanceOpened,
       });
+      const writableTeamIds = writesAllowed(await settings.get())
+        ? panelWritableTeamIds()
+        : new Set<string>();
+      const writable = writableTeamIds.has(issue.teamId);
       const historyIds = (kind: string): string[] =>
         history
           .filter((event) => event.kind === kind)
@@ -1442,6 +1457,8 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         kind: "issue",
         detail: selectDetail({
           issue,
+          writable,
+          writableTeamIds,
           team,
           states,
           members,
@@ -3259,6 +3276,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
               ...(params.milestoneId === undefined ? {} : { milestoneId: params.milestoneId }),
               ...(params.title === undefined ? {} : { title: params.title }),
               ...(params.description === undefined ? {} : { description: params.description }),
+              ...(params.parentId === undefined ? {} : { parentId: params.parentId }),
               ...(params.addLabelIds === undefined ? {} : { addLabelIds: params.addLabelIds }),
               ...(params.removeLabelIds === undefined
                 ? {}
@@ -3345,19 +3363,158 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         };
       },
 
-      async comment({ issueId, body }) {
+      async comment({ issueId, body, parentId }) {
         const guarded = panelWritableIssue(issueId);
         if ("message" in guarded) return { ok: false, message: guarded.message };
         try {
           await postComment(mutations, {
             issueId: guarded.issue.id,
             body,
+            ...(parentId === undefined ? {} : { parentId }),
             clientId: clientId(),
           });
           return { ok: true, message: null };
         } catch (error) {
           return { ok: false, message: describeError(error) };
         }
+      },
+
+      async react({ issueId, commentId, emoji }) {
+        const guarded = panelWritableIssue(issueId);
+        if ("message" in guarded) return { ok: false, message: guarded.message };
+        const viewer = store.viewer([guarded.issue.teamId]);
+        if (viewer === null) return { ok: false, message: "The Linear viewer is not in the local copy yet." };
+        try {
+          await react(mutations, {
+            issueId: guarded.issue.id,
+            commentId: commentId ?? null,
+            emoji,
+            viewerId: viewer.id,
+          });
+          return { ok: true, message: null };
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+      },
+
+      async editComment({ id, body }) {
+        const comment = store.comment(id);
+        if (comment === null) return { ok: false, message: "That comment isn't in the local copy." };
+        const guarded = panelWritableIssue(comment.issueId);
+        if ("message" in guarded) return { ok: false, message: guarded.message };
+        const viewer = store.viewer([guarded.issue.teamId]);
+        if (viewer === null) return { ok: false, message: "The Linear viewer is not in the local copy yet." };
+        try {
+          await editComment(mutations, { id, body, viewerId: viewer.id });
+          return { ok: true, message: null };
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+      },
+
+      async deleteComment({ id }) {
+        const comment = store.comment(id);
+        if (comment === null) return { ok: false, message: "That comment isn't in the local copy." };
+        const guarded = panelWritableIssue(comment.issueId);
+        if ("message" in guarded) return { ok: false, message: guarded.message };
+        const viewer = store.viewer([guarded.issue.teamId]);
+        if (viewer === null) return { ok: false, message: "The Linear viewer is not in the local copy yet." };
+        try {
+          await deleteLinearComment(mutations, { id, viewerId: viewer.id });
+          return { ok: true, message: null };
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+      },
+
+      async setParent({ issueId, parentId }) {
+        const guarded = panelWritableIssue(issueId);
+        if ("message" in guarded) return { ok: false, message: guarded.message };
+        if (parentId !== null) {
+          const parent = store.issue(parentId);
+          if (parent === null || !store.boundTeamIds().includes(parent.teamId)) {
+            return { ok: false, message: "That parent issue is not readable by any project here." };
+          }
+        }
+        try {
+          await setParent(mutations, { issueId: guarded.issue.id, parentId });
+          return { ok: true, message: null };
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+      },
+
+      async unrelate({ relationId }) {
+        const relation = store.relation(relationId);
+        if (relation === null) return { ok: false, message: "That relation isn't in the local copy." };
+        // The pane renders relations whose other end was never mirrored (an
+        // issue in a team this key cannot read); guarding that side would
+        // refuse with "no issue called <uuid>" and leave the row unremovable.
+        // Every mirrored side must be writable; Linear enforces the rest.
+        let guardedAny = false;
+        for (const issueId of [relation.issueId, relation.relatedIssueId]) {
+          if (store.issue(issueId) === null) continue;
+          const guarded = panelWritableIssue(issueId);
+          if ("message" in guarded) return { ok: false, message: guarded.message };
+          guardedAny = true;
+        }
+        if (!guardedAny) {
+          return { ok: false, message: "Neither side of that relation is in the local copy." };
+        }
+        try {
+          await unrelate(mutations, { relationId });
+          return { ok: true, message: null };
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+      },
+
+      async relate({ issueId, relatedIssueId, type }) {
+        const issue = panelWritableIssue(issueId);
+        if ("message" in issue) return { ok: false, message: issue.message };
+        const related = panelWritableIssue(relatedIssueId);
+        if ("message" in related) return { ok: false, message: related.message };
+        try {
+          await relateIssues(
+            mutations,
+            relationCreateInput({
+              issueId: issue.issue.id,
+              relatedIssueId: related.issue.id,
+              type,
+            }),
+          );
+          return { ok: true, message: null };
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+      },
+
+      async attachLink({ issueId, url, title }) {
+        const guarded = panelWritableIssue(issueId);
+        if ("message" in guarded) return { ok: false, message: guarded.message };
+        try {
+          const result = await attachUrl(mutations, {
+            issueId: guarded.issue.id,
+            url,
+            title: title ?? null,
+          });
+          return {
+            ok: true,
+            message: result.alreadyThere ? "That link is already attached." : null,
+          };
+        } catch (error) {
+          return { ok: false, message: describeError(error) };
+        }
+      },
+
+      async searchIssuesForPicker({ teamId, query }) {
+        if (!store.boundTeamIds().includes(teamId)) return { issues: [] };
+        return { issues: searchIssuesForPicker(store, teamId, query) };
+      },
+
+      async mentionCandidates({ teamId, query }) {
+        if (!store.boundTeamIds().includes(teamId)) return { candidates: [] };
+        return { candidates: mentionCandidates(store, teamId, query) };
       },
 
       /* ── M4: the nav panel ─────────────────────────────────────────────── */
@@ -3562,7 +3719,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         return { teams };
       },
 
-      async createIssue({ teamId, title, description }) {
+      async createIssue({ teamId, title, description, parentId }) {
         if (!panelWritableTeamIds().has(teamId)) {
           const team = store.team(teamId);
           return {
@@ -3571,6 +3728,16 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             message: `No bb project here is bound to ${team?.name ?? "that team"} with write access.`,
           };
         }
+        if (parentId !== undefined) {
+          const parent = store.issue(parentId);
+          if (parent === null || !store.boundTeamIds().includes(parent.teamId)) {
+            return {
+              ok: false,
+              identifier: null,
+              message: "That parent issue is not readable by any project here.",
+            };
+          }
+        }
         try {
           const node = await createIssue(mutations, clientForTeam, {
             teamId,
@@ -3578,6 +3745,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             ...(description === undefined || description.trim() === ""
               ? {}
               : { description }),
+            ...(parentId === undefined ? {} : { parentId }),
             clientId: clientId(),
           });
           // Into the mirror now, not at the next tick: the dialog navigates

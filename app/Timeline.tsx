@@ -1,8 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,6 +27,11 @@ import { safeRemoteMarkdown } from "../src/security-boundaries.js";
 import { firstUnreadTimelineEntry } from "../src/select/timeline-unread.js";
 import { safeHref } from "./href.js";
 import { useLinearRpc } from "./rpc.js";
+import {
+  displayReactionEmoji,
+  PANE_REACTION_EMOJIS,
+  reactionNameForPickerEmoji,
+} from "../src/pane-frontend.js";
 
 export function Timeline({
   detail,
@@ -156,6 +173,9 @@ export function Timeline({
               comment={comment}
               unread={key === firstUnread}
               targetCommentId={targetCommentId ?? null}
+              issueId={detail.id}
+              writable={detail.writable}
+              onReload={onReload}
             />
           );
         })}
@@ -169,11 +189,17 @@ function TimelineRow({
   comment,
   unread,
   targetCommentId,
+  issueId,
+  writable,
+  onReload,
 }: {
   entry: TimelineEntry;
   comment: CommentView | undefined;
   unread: boolean;
   targetCommentId: string | null;
+  issueId: string;
+  writable: boolean;
+  onReload: () => void;
 }) {
   return (
     <li
@@ -190,7 +216,13 @@ function TimelineRow({
       {entry.kind === "event" ? (
         <EventRow entry={entry} />
       ) : comment !== undefined ? (
-        <CommentThread comment={comment} targetCommentId={targetCommentId} />
+        <CommentThread
+          comment={comment}
+          targetCommentId={targetCommentId}
+          issueId={issueId}
+          writable={writable}
+          onReload={onReload}
+        />
       ) : null}
     </li>
   );
@@ -222,9 +254,15 @@ function EventRow({ entry }: { entry: Extract<TimelineEntry, { kind: "event" }> 
 function CommentThread({
   comment,
   targetCommentId,
+  issueId,
+  writable,
+  onReload,
 }: {
   comment: CommentView;
   targetCommentId: string | null;
+  issueId: string;
+  writable: boolean;
+  onReload: () => void;
 }) {
   const targeted =
     targetCommentId === comment.id || comment.replies.some((reply) => reply.id === targetCommentId);
@@ -250,7 +288,12 @@ function CommentThread({
       ) : null}
       {expanded ? (
         <>
-          <Comment comment={comment} />
+          <Comment
+            comment={comment}
+            issueId={issueId}
+            writable={writable}
+            onReload={onReload}
+          />
           {comment.replies.length > 0 ? (
             <ol className="bbl-rail ml-3 mt-3 space-y-3 pl-3">
               {comment.replies.map((reply) => (
@@ -259,7 +302,12 @@ function CommentThread({
                   key={reply.id}
                   className="scroll-m-8 rounded-md p-1"
                 >
-                  <Comment comment={reply} />
+                  <Comment
+                    comment={reply}
+                    issueId={issueId}
+                    writable={writable}
+                    onReload={onReload}
+                  />
                 </li>
               ))}
             </ol>
@@ -270,45 +318,185 @@ function CommentThread({
   );
 }
 
-function Comment({ comment }: { comment: Omit<CommentView, "replies"> }) {
+function Comment({
+  comment,
+  issueId,
+  writable,
+  onReload,
+}: {
+  comment: Omit<CommentView, "replies">;
+  issueId: string;
+  writable: boolean;
+  onReload: () => void;
+}) {
+  const rpc = useLinearRpc();
   const href = safeHref(comment.url);
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [body, setBody] = useState(comment.bodySource);
+
+  useEffect(() => {
+    if (!editing) setBody(comment.bodySource);
+  }, [comment.bodySource, editing]);
+
+  const save = useCallback(() => {
+    const next = body.trim();
+    if (next === "" || busy) return;
+    setBusy(true);
+    void (async () => {
+      try {
+        const result = await rpc.call("editComment", { id: comment.id, body: next });
+        if (!result.ok) {
+          toast.error(result.message ?? "That comment wasn't changed.");
+          return;
+        }
+        setEditing(false);
+        onReload();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "That comment wasn't changed.");
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, [rpc, comment.id, body, busy, onReload]);
+
+  const remove = useCallback(() => {
+    setDeleting(false);
+    setBusy(true);
+    void (async () => {
+      try {
+        const result = await rpc.call("deleteComment", { id: comment.id });
+        if (!result.ok) {
+          toast.error(result.message ?? "That comment wasn't deleted.");
+          return;
+        }
+        toast.success("Comment deleted.");
+        onReload();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "That comment wasn't deleted.");
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, [rpc, comment.id, onReload]);
 
   return (
-    <div className="flex gap-2.5">
-      <Avatar
-        initials={comment.authorInitials}
-        name={comment.author}
-      />
-      <div className="min-w-0 flex-1 space-y-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] font-medium text-foreground">{comment.author}</span>
-          {comment.createdAtRelative !== null ? (
-            <time
-              className="shrink-0 text-[10px] text-muted-foreground opacity-70"
-              title={comment.createdAtAbsolute ?? undefined}
-            >
-              {comment.createdAtRelative}
-            </time>
-          ) : null}
-          {comment.edited ? (
-            <span className="text-[10px] text-muted-foreground opacity-70">edited</span>
-          ) : null}
-          <CommentMenu comment={comment} href={href} />
-        </div>
+    <>
+      <div className="flex gap-2.5">
+        <Avatar
+          initials={comment.authorInitials}
+          name={comment.author}
+        />
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] font-medium text-foreground">{comment.author}</span>
+            {comment.createdAtRelative !== null ? (
+              <time
+                className="shrink-0 text-[10px] text-muted-foreground opacity-70"
+                title={comment.createdAtAbsolute ?? undefined}
+              >
+                {comment.createdAtRelative}
+              </time>
+            ) : null}
+            {comment.edited ? (
+              <span className="text-[10px] text-muted-foreground opacity-70">edited</span>
+            ) : null}
+            <CommentMenu
+              comment={comment}
+              href={href}
+              writable={writable}
+              onEdit={() => setEditing(true)}
+              onDelete={() => setDeleting(true)}
+            />
+          </div>
 
-        <Markdown content={safeRemoteMarkdown(comment.body)} className="text-[13px]" />
-        <ReactionChips reactions={comment.reactions} />
+          {editing ? (
+            <div className="space-y-2">
+              <Textarea
+                autoFocus
+                value={body}
+                disabled={busy}
+                onChange={(event) => setBody(event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    save();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    setBody(comment.bodySource);
+                    setEditing(false);
+                  }
+                }}
+                className="min-h-20 text-[13px]"
+                aria-label="Edit comment"
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => {
+                    setBody(comment.bodySource);
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button size="sm" disabled={busy || body.trim() === ""} onClick={save}>
+                  Save
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Markdown content={safeRemoteMarkdown(comment.body)} className="text-[13px]" />
+          )}
+          <ReactionChips
+            reactions={comment.reactions}
+            issueId={issueId}
+            commentId={comment.id}
+            writable={writable}
+            onReload={onReload}
+          />
+        </div>
       </div>
-    </div>
+
+      <AlertDialog open={deleting} onOpenChange={setDeleting}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this comment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes the comment in Linear for everyone. Replies remain and move to the
+              top level of the activity timeline.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep it</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={remove}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
 function CommentMenu({
   comment,
   href,
+  writable,
+  onEdit,
+  onDelete,
 }: {
   comment: Omit<CommentView, "replies">;
   href: string | undefined;
+  writable: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -323,6 +511,22 @@ function CommentMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
+        {writable && comment.mine ? (
+          <>
+            <DropdownMenuItem onSelect={onEdit}>
+              <Icon name="Edit" className="size-3.5" aria-hidden />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={onDelete}
+            >
+              <Icon name="Trash2" className="size-3.5" aria-hidden />
+              Delete
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         <DropdownMenuItem
           disabled={comment.url === null}
           onSelect={() => {
@@ -372,24 +576,116 @@ function Avatar({
   );
 }
 
-export function ReactionChips({ reactions }: { reactions: DetailView["reactions"] }) {
-  if (reactions.length === 0) return null;
+export function ReactionChips({
+  reactions,
+  issueId,
+  commentId,
+  writable,
+  onReload,
+}: {
+  reactions: DetailView["reactions"];
+  issueId: string;
+  commentId?: string;
+  writable: boolean;
+  onReload: () => void;
+}) {
+  const rpc = useLinearRpc();
+  const [busyEmoji, setBusyEmoji] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const toggle = useCallback(
+    (emoji: string) => {
+      if (busyEmoji !== null) return;
+      setBusyEmoji(emoji);
+      void (async () => {
+        try {
+          const result = await rpc.call("react", {
+            issueId,
+            ...(commentId === undefined ? {} : { commentId }),
+            emoji,
+          });
+          if (!result.ok) {
+            toast.error(result.message ?? "That reaction wasn't changed.");
+            return;
+          }
+          setPickerOpen(false);
+          onReload();
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "That reaction wasn't changed.");
+        } finally {
+          setBusyEmoji(null);
+        }
+      })();
+    },
+    [rpc, issueId, commentId, busyEmoji, onReload],
+  );
+
+  if (reactions.length === 0 && !writable) return null;
   return (
     <div className="flex flex-wrap gap-1 pt-1" aria-label="Reactions">
-      {reactions.map((reaction) => (
-        <span
-          key={reaction.emoji}
-          className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] ${
-            reaction.mine
-              ? "border-primary bg-primary/10 text-foreground"
-              : "border-border text-muted-foreground"
-          }`}
-          title={`${String(reaction.count)} reaction${reaction.count === 1 ? "" : "s"}`}
-        >
-          <span aria-hidden>{reaction.emoji}</span>
-          <span className="tabular-nums">{reaction.count}</span>
-        </span>
-      ))}
+      {reactions.map((reaction) => {
+        const className = `inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] ${
+          reaction.mine
+            ? "border-primary bg-primary/10 text-foreground"
+            : "border-border text-muted-foreground"
+        }`;
+        const content = (
+          <>
+            <span aria-hidden>{displayReactionEmoji(reaction.emoji)}</span>
+            <span className="tabular-nums">{reaction.count}</span>
+          </>
+        );
+        const title = `${String(reaction.count)} reaction${reaction.count === 1 ? "" : "s"}`;
+        return writable ? (
+          <button
+            type="button"
+            key={reaction.emoji}
+            className={className}
+            title={title}
+            disabled={busyEmoji !== null}
+            onClick={() => toggle(reaction.emoji)}
+          >
+            {content}
+          </button>
+        ) : (
+          <span key={reaction.emoji} className={className} title={title}>
+            {content}
+          </span>
+        );
+      })}
+      {writable ? (
+        <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex min-h-6 items-center rounded-full border border-dashed border-border px-2 text-[11px] text-muted-foreground hover:bg-state-hover hover:text-foreground"
+              aria-label="Add reaction"
+            >
+              +
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="w-auto p-2"
+            mobileTitle="Add reaction"
+          >
+            <div className="grid grid-cols-4 gap-1">
+              {PANE_REACTION_EMOJIS.map((emoji) => (
+                <button
+                  type="button"
+                  key={emoji}
+                  className="grid size-9 place-items-center rounded-md text-lg hover:bg-state-hover"
+                  disabled={busyEmoji !== null}
+                  aria-label={`React with ${emoji}`}
+                  onClick={() => toggle(reactionNameForPickerEmoji(emoji))}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      ) : null}
     </div>
   );
 }

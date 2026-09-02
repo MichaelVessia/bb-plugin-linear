@@ -7,8 +7,11 @@ import {
   attachUrl,
   clientId,
   createIssue,
+  editComment,
   postComment,
+  react,
   relateIssues,
+  setParent,
   updateIssue,
   type MutationDeps,
 } from "./mutations.js";
@@ -128,8 +131,11 @@ const COMMENT_TOOLS = ["linear_comment"] as const;
  *  worktree, a provider session — and an agent that can do that on a misread
  *  is a worse trade than one that has to ask. */
 const WRITE_TOOLS = [
+  "linear_comment_react",
+  "linear_comment_edit",
   "linear_issue_update",
   "linear_issue_create",
+  "linear_issue_set_parent",
   "linear_issue_relate",
   "linear_issue_attach",
   "linear_thread_start",
@@ -310,6 +316,17 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       );
     }
     return issue;
+  }
+
+  async function resolveComment(
+    current: Scope,
+    id: string,
+    signal?: AbortSignal,
+  ) {
+    const comment = deps.store.comment(id);
+    if (comment === null) throw new Error(`No comment called ${id}.`);
+    const issue = await resolveIssue(current, comment.issueId, "write", signal);
+    return { comment, issue };
   }
 
   /* ── Read ──────────────────────────────────────────────────────────────── */
@@ -690,6 +707,71 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
   });
 
   bb.agents.registerTool({
+    name: "linear_comment_react",
+    description: "Toggle your emoji reaction on a Linear issue or one of its comments.",
+    parameters: z.object({
+      issue: z.string().min(1).describe("An identifier such as ENG-42, or an issue id."),
+      comment: z.string().optional().describe("A comment id. Omit to react to the issue."),
+      emoji: z.string().min(1),
+    }),
+    presentation: {
+      label: {
+        pending: "Reacting in Linear",
+        completed: "Reacted in Linear",
+      },
+    },
+    execute: async ({ issue, comment, emoji }, ctx) => {
+      const current = scope(ctx.projectId);
+      const row = await resolveIssue(current, issue, "write", ctx.signal);
+      const viewer = deps.store.viewer([row.teamId]);
+      if (viewer === null) {
+        return {
+          content: [{ type: "text", text: "The Linear viewer is not in the local copy yet." }],
+          isError: true,
+        };
+      }
+      try {
+        const result = await react(deps.mutations, {
+          issueId: row.id,
+          commentId: comment ?? null,
+          emoji,
+          viewerId: viewer.id,
+        });
+        return `${result.active ? "Added" : "Removed"} ${emoji} on ${row.identifier}.`;
+      } catch (error) {
+        return { content: [{ type: "text", text: describeError(error) }], isError: true };
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "linear_comment_edit",
+    description: "Edit one of your own Linear comments.",
+    parameters: z.object({
+      comment: z.string().min(1).describe("The comment id."),
+      body: z.string().min(1).describe("Markdown. Replaces the whole comment body."),
+    }),
+    presentation: {
+      label: {
+        pending: "Editing a Linear comment",
+        completed: "Edited a Linear comment",
+      },
+    },
+    execute: async ({ comment, body }, ctx) => {
+      const current = scope(ctx.projectId);
+      try {
+        const resolved = await resolveComment(current, comment, ctx.signal);
+        const viewer = deps.store.viewer([resolved.issue.teamId]);
+        if (viewer === null) throw new Error("The Linear viewer is not in the local copy yet.");
+        await editComment(deps.mutations, { id: comment, body, viewerId: viewer.id });
+        return `Edited your comment on ${resolved.issue.identifier}.`;
+      } catch (error) {
+        return { content: [{ type: "text", text: describeError(error) }], isError: true };
+      }
+    },
+  });
+
+  bb.agents.registerTool({
     name: "linear_issue_update",
     description:
       "Change a Linear issue's state, assignee, priority, estimate or labels. Call linear_team_context first to get the ids — a state's name is not its id, and matching on a name is matching on English.",
@@ -802,7 +884,7 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       const parent =
         params.parent === undefined
           ? null
-          : await resolveIssue(current, params.parent, "write", ctx.signal);
+          : await resolveIssue(current, params.parent, "read", ctx.signal);
 
       try {
         const issue = await createIssue(deps.mutations, (teamId) => deps.clientForTeam(teamId), {
@@ -819,6 +901,41 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
         return `Created ${issue.identifier} — ${issue.title}${
           issue.url === null ? "" : `\n${issue.url}`
         }`;
+      } catch (error) {
+        return { content: [{ type: "text", text: describeError(error) }], isError: true };
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "linear_issue_set_parent",
+    description: "Set or clear a Linear issue's parent.",
+    parameters: z.object({
+      issue: z.string().min(1).describe("The child issue."),
+      parent: z
+        .string()
+        .nullable()
+        .describe("The parent issue identifier, or null to clear the parent."),
+    }),
+    presentation: {
+      label: {
+        pending: "Changing a Linear issue parent",
+        completed: "Changed a Linear issue parent",
+      },
+    },
+    execute: async ({ issue, parent }, ctx) => {
+      const current = scope(ctx.projectId);
+      const child = await resolveIssue(current, issue, "write", ctx.signal);
+      const parentIssue =
+        parent === null ? null : await resolveIssue(current, parent, "read", ctx.signal);
+      try {
+        await setParent(deps.mutations, {
+          issueId: child.id,
+          parentId: parentIssue?.id ?? null,
+        });
+        return parentIssue === null
+          ? `Cleared the parent of ${child.identifier}.`
+          : `Set ${parentIssue.identifier} as the parent of ${child.identifier}.`;
       } catch (error) {
         return { content: [{ type: "text", text: describeError(error) }], isError: true };
       }

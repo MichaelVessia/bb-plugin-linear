@@ -39,6 +39,9 @@ export type { CommentView, DetailView, PropertyView, StateOption, SubIssueView }
 
 export interface DetailContext {
   readonly issue: IssueRow;
+  readonly writable: boolean;
+  /** Teams for which both the binding and master write switch permit writes. */
+  readonly writableTeamIds: ReadonlySet<string>;
   readonly team: TeamRow | null;
   readonly states: readonly WorkflowStateRow[];
   readonly members: ReadonlyMap<string, MemberRow>;
@@ -229,6 +232,7 @@ export function selectDetail(context: DetailContext): DetailView {
     return {
       id: comment.id,
       body: markdown(comment.body),
+      bodySource: comment.body,
       author: name,
       authorInitials: initials(name),
       avatarUrl: author?.avatarUrl ?? null,
@@ -242,6 +246,7 @@ export function selectDetail(context: DetailContext): DetailView {
       url: comment.url,
       resolved: comment.resolvedAt !== null,
       resolvedBy,
+      mine: context.viewerId !== null && comment.userId === context.viewerId,
       reactions: reactionViews(comment.id),
     };
   });
@@ -326,6 +331,9 @@ export function selectDetail(context: DetailContext): DetailView {
       title: relation.title ?? "Unknown issue",
       tone: toneForStateType(relation.stateType),
       done: relation.stateType === "completed" || relation.stateType === "canceled",
+      removable:
+        relation.counterpartTeamId !== null &&
+        context.writableTeamIds.has(relation.counterpartTeamId),
     };
     if (relation.type === "blocks") {
       (relation.inverse ? emptyRelations.blockedBy : emptyRelations.blocks).push(item);
@@ -349,10 +357,13 @@ export function selectDetail(context: DetailContext): DetailView {
 
   return {
     id: issue.id,
+    writable: context.writable,
     identifier: issue.identifier,
+    teamId: issue.teamId,
     title: issue.title,
     url: issue.url,
     description: issue.description === null ? null : markdown(issue.description),
+    descriptionSource: issue.description,
     stateId: issue.stateId,
     stateName: state?.name ?? "Unknown state",
     tone,

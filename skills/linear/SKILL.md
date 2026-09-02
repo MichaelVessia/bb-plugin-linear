@@ -54,6 +54,12 @@ Writes go to Linear. Two things follow:
   this" and that is on purpose: replacing the set would silently delete a label
   somebody added while you were thinking.
 
+With agent writes set to **Full**, the additional tools are
+`linear_issue_update`, `linear_issue_create`, `linear_issue_set_parent`,
+`linear_issue_relate`, `linear_issue_attach`, `linear_comment_react`,
+`linear_comment_edit`, and `linear_thread_start`. Comment edits are limited to
+the viewer's own comments. There is deliberately no delete or archive tool.
+
 ## This thread's own issue
 
 Every bb thread can be **bound** to the issue it is working on. When it is,

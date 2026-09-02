@@ -20,6 +20,8 @@ describe("selectDetail pane parity", () => {
         }),
         syncedAt: NOW,
       },
+      writable: true,
+      writableTeamIds: new Set(["team_eng"]),
       team: { ...team("team_eng", "ENG"), fetchedAt: NOW },
       states: [state("s1", "team_eng", "started", 1, "Building")],
       members: new Map([["u1", jane]]),
@@ -50,8 +52,12 @@ describe("selectDetail pane parity", () => {
       }],
       relations: [{
         id: "r1", issueId: "p1", relatedIssueId: "i1", type: "blocks", inverse: true,
-        counterpartId: "p1", identifier: "ENG-0", title: "Parent blocker", stateId: "s1",
+        counterpartId: "p1", counterpartTeamId: "team_eng", identifier: "ENG-0", title: "Parent blocker", stateId: "s1",
         stateType: "started",
+      }, {
+        id: "r2", issueId: "i1", relatedIssueId: "ops1", type: "related", inverse: false,
+        counterpartId: "ops1", counterpartTeamId: "team_ops", identifier: "OPS-1", title: "Operations", stateId: null,
+        stateType: null,
       }],
       history: [{
         id: "h1:description", issueId: "i1", createdAt: NOW + 5, actorId: "u1", botName: null,
@@ -81,13 +87,19 @@ describe("selectDetail pane parity", () => {
 
     const view = selectDetail(context as never);
     expect(() => detailViewSchema.parse(view)).not.toThrow();
+    expect(view.writable).toBe(true);
+    expect(view.teamId).toBe("team_eng");
     expect(view.description).toContain("**@Jane Doe**");
     expect(view.description).toContain("/api/v1/plugins/linear/http/image?");
+    expect(view.descriptionSource).toContain("@[Jane Doe](u1)");
     expect(view.parent?.identifier).toBe("ENG-0");
     expect(view.resources.groups.map((group) => group.label)).toEqual(["GitHub", "Documents"]);
     expect(view.relations.blockedBy[0]?.identifier).toBe("ENG-0");
+    expect(view.relations.blockedBy[0]?.removable).toBe(true);
+    expect(view.relations.related[0]?.removable).toBe(false);
     expect(view.reactions[0]).toMatchObject({ emoji: "👍", count: 1, mine: true });
-    expect(view.comments[0]).toMatchObject({ resolved: true, resolvedBy: "Jane Doe" });
+    expect(view.comments[0]).toMatchObject({ resolved: true, resolvedBy: "Jane Doe", mine: true });
+    expect(view.comments[0]?.bodySource).toBe("Hello @[Jane](u1)");
     expect(view.comments[0]?.reactions[0]?.emoji).toBe("❤️");
     expect(view.subscribers).toMatchObject({ count: 1 });
     expect(view.customerRequests[0]).toMatchObject({ customer: "Acme", priority: 2 });

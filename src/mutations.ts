@@ -3,7 +3,7 @@ import { unwrapMutation } from "./linear/client.js";
 import type { LinearClient } from "./linear/client.js";
 import { isLinearError, refused } from "./linear/errors.js";
 import type { CommentNode, IssueNode } from "./linear/types.js";
-import type { CommentRow } from "./store/rows.js";
+import type { CommentRow, ReactionRow } from "./store/rows.js";
 import type { Store } from "./store/store.js";
 import { toIssueInput } from "./sync/apply.js";
 
@@ -36,6 +36,7 @@ export interface IssuePatch {
   readonly dueDate?: string | null;
   readonly title?: string;
   readonly description?: string;
+  readonly parentId?: string | null;
   /** Label ids to add and remove, computed by the caller from the difference
    *  between what it read and what the user chose. */
   readonly addLabelIds?: readonly string[];
@@ -70,6 +71,7 @@ export function buildIssueUpdateInput(patch: IssuePatch): Record<string, unknown
   if (patch.dueDate !== undefined) input["dueDate"] = patch.dueDate;
   if (patch.title !== undefined) input["title"] = patch.title;
   if (patch.description !== undefined) input["description"] = patch.description;
+  if (patch.parentId !== undefined) input["parentId"] = patch.parentId;
 
   if (patch.addLabelIds !== undefined && patch.addLabelIds.length > 0) {
     input["addedLabelIds"] = [...patch.addLabelIds];
@@ -129,6 +131,7 @@ function absorbComment(deps: MutationDeps, comment: CommentNode, issueId: string
     updatedAt: parseInstant(comment.updatedAt) ?? at,
     editedAt: parseInstant(comment.editedAt),
     resolvedAt: parseInstant(comment.resolvedAt),
+    resolvingUserId: comment.resolvingUser?.id ?? null,
   };
   deps.store.putComments([row]);
   deps.store.recordEcho(row.id, row.updatedAt, at);
@@ -220,6 +223,140 @@ export async function postComment(
   });
 }
 
+/** Toggle one viewer reaction and mirror the answer before returning. */
+export async function react(
+  deps: MutationDeps,
+  input: { issueId: string; commentId: string | null; emoji: string; viewerId: string },
+): Promise<{ active: boolean; id: string }> {
+  const emoji = input.emoji.trim();
+  if (emoji === "") throw refused("A reaction needs an emoji.");
+  if (input.commentId !== null) {
+    const comment = deps.store.comment(input.commentId);
+    if (comment === null || comment.issueId !== input.issueId) {
+      throw refused("That comment isn't on this issue.");
+    }
+  }
+
+  const existing = deps.store
+    .reactionsFor(input.issueId)
+    .find(
+      (reaction) =>
+        reaction.commentId === input.commentId &&
+        reaction.emoji === emoji &&
+        reaction.userId === input.viewerId,
+    );
+  if (existing !== undefined) {
+    return write(deps, "Couldn't remove that reaction", async () => {
+      const result = await deps.clientFor(input.issueId).deleteReaction(existing.id, {
+        initiator: "user",
+        ...(deps.signal ? { signal: deps.signal } : {}),
+      });
+      if (!result.reactionDelete.success) throw refused("Linear didn't remove that reaction.");
+      const at = deps.now();
+      deps.store.deleteReaction(existing.id);
+      deps.store.recordEcho(existing.id, at, at);
+      deps.publish?.();
+      return { active: false, id: existing.id };
+    });
+  }
+
+  return write(deps, "Couldn't add that reaction", async () => {
+    const id = clientId();
+    const result = await deps.clientFor(input.issueId).createReaction(
+      {
+        id,
+        emoji,
+        ...(input.commentId === null
+          ? { issueId: input.issueId }
+          : { commentId: input.commentId }),
+      },
+      { initiator: "user", ...(deps.signal ? { signal: deps.signal } : {}) },
+    );
+    const reaction = unwrapMutation<
+      NonNullable<typeof result.reactionCreate.reaction>
+    >(result.reactionCreate, "reaction", "add that reaction");
+    const at = deps.now();
+    const row: ReactionRow = {
+      id: reaction.id,
+      issueId: input.issueId,
+      commentId: input.commentId,
+      emoji: reaction.emoji,
+      userId: reaction.user?.id ?? input.viewerId,
+      createdAt: at,
+    };
+    deps.store.mergeReactions([row]);
+    deps.store.recordEcho(row.id, at, at);
+    deps.publish?.();
+    return { active: true, id: row.id };
+  });
+}
+
+/** Edit only a comment owned by the current workspace viewer. */
+export async function editComment(
+  deps: MutationDeps,
+  input: { id: string; body: string; viewerId: string },
+): Promise<CommentRow> {
+  const existing = deps.store.comment(input.id);
+  if (existing === null) throw refused("That comment isn't in the local copy.");
+  if (existing.userId !== input.viewerId) {
+    throw refused("Only your own comments can be edited.");
+  }
+  const body = input.body.trim();
+  if (body === "") throw refused("A comment needs some text.");
+
+  return write(deps, "Couldn't edit that comment", async () => {
+    const result = await deps.clientFor(existing.issueId).updateComment(
+      input.id,
+      { body },
+      { initiator: "user", ...(deps.signal ? { signal: deps.signal } : {}) },
+    );
+    const comment = unwrapMutation<CommentNode>(
+      result.commentUpdate,
+      "comment",
+      "edit that comment",
+    );
+    return absorbComment(deps, comment, existing.issueId);
+  });
+}
+
+/** Delete only a comment owned by the current viewer. Replies survive and are
+ * made top-level by the store transaction. Human surfaces only: no agent tool
+ * calls this function. */
+export async function deleteComment(
+  deps: MutationDeps,
+  input: { id: string; viewerId: string },
+): Promise<void> {
+  const existing = deps.store.comment(input.id);
+  if (existing === null) throw refused("That comment isn't in the local copy.");
+  if (existing.userId !== input.viewerId) {
+    throw refused("Only your own comments can be deleted.");
+  }
+
+  await write(deps, "Couldn't delete that comment", async () => {
+    const result = await deps.clientFor(existing.issueId).deleteComment(input.id, {
+      initiator: "user",
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    });
+    if (!result.commentDelete.success) throw refused("Linear didn't delete that comment.");
+    const at = deps.now();
+    deps.store.deleteComment(input.id);
+    deps.store.recordEcho(input.id, at, at);
+    deps.publish?.();
+  });
+}
+
+export async function setParent(
+  deps: MutationDeps,
+  input: { issueId: string; parentId: string | null },
+): Promise<IssueNode> {
+  return updateIssue(
+    deps,
+    input.issueId,
+    { parentId: input.parentId },
+    "Couldn't change that issue's parent",
+  );
+}
+
 /**
  * Create an issue.
  *
@@ -280,7 +417,45 @@ export async function relateIssues(
       initiator: "user",
       ...(deps.signal ? { signal: deps.signal } : {}),
     });
-    unwrapMutation(result.issueRelationCreate, "issueRelation", "relate those issues");
+    const relation = unwrapMutation<
+      NonNullable<typeof result.issueRelationCreate.issueRelation>
+    >(
+      result.issueRelationCreate,
+      "issueRelation",
+      "relate those issues",
+    );
+    const issueId = relation.issue?.id ?? input.issueId;
+    const relatedIssueId = relation.relatedIssue?.id ?? input.relatedIssueId;
+    deps.store.mergeRelations([{
+      id: relation.id,
+      issueId,
+      relatedIssueId,
+      type: relation.type,
+    }]);
+    const at = deps.now();
+    deps.store.recordEcho(relation.id, at, at);
+    deps.publish?.();
+  });
+}
+
+/** Remove a relation by its mirrored id. Human surfaces only. */
+export async function unrelate(
+  deps: MutationDeps,
+  input: { relationId: string },
+): Promise<void> {
+  const relation = deps.store.relation(input.relationId);
+  if (relation === null) throw refused("That relation isn't in the local copy.");
+  await write(deps, "Couldn't remove that relation", async () => {
+    const result = await deps.clientFor(relation.issueId).deleteRelation(input.relationId, {
+      initiator: "user",
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    });
+    if (!result.issueRelationDelete.success) {
+      throw refused("Linear didn't remove that relation.");
+    }
+    const at = deps.now();
+    deps.store.deleteRelation(input.relationId);
+    deps.store.recordEcho(input.relationId, at, at);
     deps.publish?.();
   });
 }
@@ -311,6 +486,8 @@ export async function attachUrl(
       "attach that link",
     );
     if (attachment.url !== null) {
+      const at = deps.now();
+      const updatedAt = parseInstant(attachment.updatedAt) ?? at;
       deps.store.mergeAttachments([{
         id: attachment.id,
         issueId: input.issueId,
@@ -320,9 +497,10 @@ export async function attachUrl(
         sourceType: attachment.sourceType,
         groupBySource: attachment.groupBySource,
         createdAt: parseInstant(attachment.createdAt),
-        updatedAt: parseInstant(attachment.updatedAt),
+        updatedAt,
         creatorId: attachment.creator?.id ?? null,
       }]);
+      deps.store.recordEcho(attachment.id, updatedAt, at);
     }
     deps.publish?.();
     return { alreadyThere: false };

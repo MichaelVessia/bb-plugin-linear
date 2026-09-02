@@ -357,6 +357,37 @@ export interface CommentCreateResult {
   };
 }
 
+export interface CommentUpdateResult {
+  readonly commentUpdate: {
+    readonly success: boolean;
+    readonly comment: CommentNode | null;
+  };
+}
+
+export interface DeleteResult {
+  readonly success: boolean;
+  readonly entityId: string;
+}
+
+export interface CommentDeleteResult {
+  readonly commentDelete: DeleteResult;
+}
+
+export interface ReactionCreateResult {
+  readonly reactionCreate: {
+    readonly success: boolean;
+    readonly reaction: {
+      readonly id: string;
+      readonly emoji: string;
+      readonly user: Ref | null;
+    } | null;
+  };
+}
+
+export interface ReactionDeleteResult {
+  readonly reactionDelete: DeleteResult;
+}
+
 export interface TickResult {
   readonly issues: Connection<TickIssueNode>;
   readonly comments: Connection<CommentNode>;
@@ -556,6 +587,10 @@ export interface IssueRelationCreateResult {
       readonly relatedIssue: { readonly id: string; readonly identifier: string } | null;
     } | null;
   };
+}
+
+export interface IssueRelationDeleteResult {
+  readonly issueRelationDelete: DeleteResult;
 }
 
 export interface AttachmentLinkResult {

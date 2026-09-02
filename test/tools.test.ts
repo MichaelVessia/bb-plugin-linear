@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { issueNeedsRefresh, registerTools } from "../src/tools.js";
+import { issueNeedsRefresh, registerTools, toolsFor } from "../src/tools.js";
 import { createTestStore, issue, member, NOW, team } from "./helpers/store.js";
 
 describe("agent issue resolution", () => {
@@ -105,5 +107,41 @@ describe("agent issue resolution", () => {
     expect(active.match(/edited the description/g)).toHaveLength(29);
     expect(active).toContain("Linear: edited the description");
     expect(active).toContain("Linear: assigned to Pat Assignee");
+  });
+});
+
+describe("pane write agent tools", () => {
+  const NEW_TOOLS = [
+    "linear_comment_react",
+    "linear_comment_edit",
+    "linear_issue_set_parent",
+  ];
+
+  it("offers the new tools only with full agent writes", () => {
+    for (const name of NEW_TOOLS) {
+      expect(toolsFor("off")).not.toContain(name);
+      expect(toolsFor("comment")).not.toContain(name);
+      expect(toolsFor("full")).toContain(name);
+    }
+  });
+
+  it("registers the new tools and no deletion tool", () => {
+    const names: string[] = [];
+    registerTools({
+      agents: {
+        registerTool: (tool: { name: string }) => names.push(tool.name),
+        configure: () => {},
+      },
+    } as never, {} as never);
+    expect(names).toEqual(expect.arrayContaining(NEW_TOOLS));
+    expect(names.filter((name) => name.includes("delete"))).toEqual([]);
+  });
+
+  it("documents every new tool in the shipped Linear skill", () => {
+    const skill = readFileSync(
+      fileURLToPath(new URL("../skills/linear/SKILL.md", import.meta.url)),
+      "utf8",
+    );
+    for (const name of NEW_TOOLS) expect(skill).toContain(name);
   });
 });

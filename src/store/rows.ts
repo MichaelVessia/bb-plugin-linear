@@ -369,6 +369,7 @@ export interface ActivityCursorRow {
 export interface RelationDetailRow extends RelationRow {
   readonly inverse: boolean;
   readonly counterpartId: string;
+  readonly counterpartTeamId: string | null;
   readonly identifier: string | null;
   readonly title: string | null;
   readonly stateId: string | null;

@@ -90,6 +90,15 @@ export const serverRpcContract = defineRpcContract({
   updateIssue: legacyContract.updateIssue,
   editorOptions: legacyContract.editorOptions,
   comment: legacyContract.comment,
+  react: legacyContract.react,
+  editComment: legacyContract.editComment,
+  deleteComment: legacyContract.deleteComment,
+  setParent: legacyContract.setParent,
+  unrelate: legacyContract.unrelate,
+  relate: legacyContract.relate,
+  attachLink: legacyContract.attachLink,
+  searchIssuesForPicker: legacyContract.searchIssuesForPicker,
+  mentionCandidates: legacyContract.mentionCandidates,
 
   /* ── M4: the nav panel, on the legacy shapes ─────────────────────────── */
   /*

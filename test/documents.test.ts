@@ -14,8 +14,14 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   DOCUMENTS,
+  COMMENT_DELETE,
+  COMMENT_UPDATE,
   ISSUE_ACTIVITY_PAGE,
   ISSUE_DETAIL,
+  ISSUE_RELATION_CREATE,
+  ISSUE_RELATION_DELETE,
+  REACTION_CREATE,
+  REACTION_DELETE,
   TICK,
 } from "../src/linear/documents.js";
 import {
@@ -164,5 +170,22 @@ describe("pane read document budgets", () => {
     expect(estimateComplexity(TICK.source, TICK.pageSizes ?? {})).toBeLessThan(
       SELF_IMPOSED_COMPLEXITY_BUDGET,
     );
+  });
+});
+
+describe("pane write documents", () => {
+  it("registers every new operation as a mutation", () => {
+    expect([
+      REACTION_CREATE,
+      REACTION_DELETE,
+      COMMENT_UPDATE,
+      COMMENT_DELETE,
+      ISSUE_RELATION_DELETE,
+    ].map((document) => document.kind)).toEqual(Array(5).fill("mutation"));
+  });
+
+  it("declares relation type as Linear's enum rather than a string", () => {
+    expect(ISSUE_RELATION_CREATE.source).toContain("$type: IssueRelationType!");
+    expect(ISSUE_RELATION_CREATE.source).not.toContain("$type: String!");
   });
 });

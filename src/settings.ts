@@ -186,7 +186,7 @@ export const SETTING_DESCRIPTORS = {
     options: ["off", "comment", "full"],
     default: "comment",
     description:
-      "Read and comment. Choose Full to let agents create issues and change states, assignees and labels; choose Off to withhold every writing tool. Agents never get delete, archive or workspace administration at any setting.",
+      "Read and comment. Choose Full to let agents create and update issues, set parents and relations, attach links, react, and edit their own comments; choose Off to withhold every writing tool. Agents never get delete, archive or workspace administration at any setting.",
   },
 
   pushPluginId: {

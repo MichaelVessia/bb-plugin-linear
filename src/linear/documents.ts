@@ -816,6 +816,9 @@ export const COMMENT_CREATE = doc(
       updatedAt
       editedAt
       resolvedAt
+      resolvingUser {
+        id
+      }
       user {
         id
       }
@@ -826,6 +829,82 @@ export const COMMENT_CREATE = doc(
         id
       }
     }
+  }
+}`,
+);
+
+/** Edit a comment and return the same shape as creation so the mutation layer
+ * can replace the mirrored row without a follow-up read. */
+export const COMMENT_UPDATE = doc(
+  "CommentUpdate",
+  "mutation",
+  `mutation CommentUpdate($id: String!, $input: CommentUpdateInput!) {
+  commentUpdate(id: $id, input: $input) {
+    success
+    comment {
+      id
+      body
+      url
+      createdAt
+      updatedAt
+      editedAt
+      resolvedAt
+      resolvingUser {
+        id
+      }
+      user {
+        id
+      }
+      parent {
+        id
+      }
+      issue {
+        id
+      }
+    }
+  }
+}`,
+);
+
+/** Human-only deletion. There is deliberately no agent tool for this
+ * document; keeping it in the registry still makes the transport gate it. */
+export const COMMENT_DELETE = doc(
+  "CommentDelete",
+  "mutation",
+  `mutation CommentDelete($id: String!) {
+  commentDelete(id: $id) {
+    success
+    entityId
+  }
+}`,
+);
+
+/** Reactions use a client-generated id for create-once semantics, exactly as
+ * comments do. One of commentId or issueId is supplied by the caller. */
+export const REACTION_CREATE = doc(
+  "ReactionCreate",
+  "mutation",
+  `mutation ReactionCreate($input: ReactionCreateInput!) {
+  reactionCreate(input: $input) {
+    success
+    reaction {
+      id
+      emoji
+      user {
+        id
+      }
+    }
+  }
+}`,
+);
+
+export const REACTION_DELETE = doc(
+  "ReactionDelete",
+  "mutation",
+  `mutation ReactionDelete($id: String!) {
+  reactionDelete(id: $id) {
+    success
+    entityId
   }
 }`,
 );
@@ -1387,8 +1466,8 @@ ${ISSUE_FIELDS}`,
 /**
  * Relate two issues.
  *
- * `type` is a `String` on the input, not an enum, and the four values that
- * matter are `blocks`, `related`, `duplicate` and `similar`. Direction is
+ * `type` is Linear's `IssueRelationType` enum. The four values that matter
+ * are `blocks`, `related`, `duplicate` and `similar`. Direction is
  * carried by which id is `issueId` and which is `relatedIssueId` — "A blocks
  * B" and "B blocks A" are the same mutation with the arguments swapped, which
  * is the single easiest thing to get backwards here.
@@ -1396,8 +1475,16 @@ ${ISSUE_FIELDS}`,
 export const ISSUE_RELATION_CREATE = doc(
   "IssueRelationCreate",
   "mutation",
-  `mutation IssueRelationCreate($input: IssueRelationCreateInput!) {
-  issueRelationCreate(input: $input) {
+  `mutation IssueRelationCreate(
+  $issueId: String!
+  $relatedIssueId: String!
+  $type: IssueRelationType!
+) {
+  issueRelationCreate(input: {
+    issueId: $issueId
+    relatedIssueId: $relatedIssueId
+    type: $type
+  }) {
     success
     issueRelation {
       id
@@ -1411,6 +1498,19 @@ export const ISSUE_RELATION_CREATE = doc(
         identifier
       }
     }
+  }
+}`,
+);
+
+/** Human-only relation removal. Agents can create relations but never delete
+ * them, matching the promise in the settings copy. */
+export const ISSUE_RELATION_DELETE = doc(
+  "IssueRelationDelete",
+  "mutation",
+  `mutation IssueRelationDelete($id: String!) {
+  issueRelationDelete(id: $id) {
+    success
+    entityId
   }
 }`,
 );

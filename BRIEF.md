@@ -383,3 +383,20 @@ checklist maintained in `docs/smoke.md` from M2 on.
   A marker column was deferred because the existing impossible-number shape
   distinguishes detached stubs without another migration; child stubs keep a
   parent id and therefore remain visible where sub-issues belong.
+
+## 2026-09-02 — v0.3.0 pane parity, write track
+
+- The pane's shared contract now covers title/description edits, comment
+  editing and deletion, reaction toggles, parents and sub-issues, relations,
+  and linked resources. Beat: leaving the pane as a read-only summary that
+  still sends routine work back to Linear.
+- Full agent access adds `linear_comment_react`, `linear_comment_edit`, and
+  `linear_issue_set_parent` alongside issue creation, updates, relations and
+  attachments. Delete stays human-only because the shipped settings promise
+  agents never receive delete, archive or workspace-administration tools.
+  Beat: full symmetry, which would have broken that promise.
+- Mentions use Linear's documented `@[name](id)` markup. Beat: plain `@name`,
+  which looks right in bb but Linear cannot resolve to a person.
+- "Add sub-issue…" lives beside the sub-issue section heading instead of in
+  the issue menu. Beat: hiding a section-specific action behind a global menu;
+  the shared dialog still locks the team and presets the parent as designed.

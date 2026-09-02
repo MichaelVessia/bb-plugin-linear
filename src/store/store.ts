@@ -262,6 +262,10 @@ export interface Store {
   /** Upsert comments and report how many are new or carry a different Linear version. */
   putComments(comments: readonly CommentRow[]): number;
   comments(issueId: string): CommentRow[];
+  comment(id: string): CommentRow | null;
+  /** Remove one comment locally while preserving its replies as top-level
+   * comments, matching Linear's orphan handling after a delete. */
+  deleteComment(id: string): void;
   /** Resolve a comment-only webhook hint back to its mirrored issue. */
   commentIssueId(commentId: string): string | null;
   reconcileCommentsWindow(
@@ -286,6 +290,7 @@ export interface Store {
   ): void;
   mergeReactions(rows: readonly ReactionRow[]): void;
   reactionsFor(issueId: string): ReactionRow[];
+  deleteReaction(id: string): void;
 
   replaceSubscribers(issueId: string, userIds: readonly string[]): void;
   subscribersFor(issueId: string): string[];
@@ -343,6 +348,8 @@ export interface Store {
    * what its detail fetch returned. */
   replaceRelations(issueId: string, rows: readonly RelationRow[]): void;
   mergeRelations(rows: readonly RelationRow[]): void;
+  relation(id: string): RelationRow | null;
+  deleteRelation(id: string): void;
   relationsFor(issueId: string): RelationDetailRow[];
   /** Identifiers of the open issues blocking each of these, in one query. The
    *  panel's second line and the Inbox both need it per page. */
@@ -1383,6 +1390,29 @@ export function createStore(db: Database): Store {
         .all(issueId) as CommentRow[];
     },
 
+    comment(id) {
+      const row = db
+        .prepare(
+          `SELECT id, issue_id AS issueId, user_id AS userId, parent_id AS parentId,
+                  body, url, created_at AS createdAt, updated_at AS updatedAt,
+                  edited_at AS editedAt, resolved_at AS resolvedAt,
+                  resolving_user_id AS resolvingUserId
+             FROM comment WHERE id = ?`,
+        )
+        .get(id) as CommentRow | undefined;
+      return row ?? null;
+    },
+
+    deleteComment(id) {
+      db.transaction(() => {
+        // Linear keeps replies when their parent is deleted. Nulling the link
+        // makes the existing projection render them as top-level comments.
+        db.prepare(`UPDATE comment SET parent_id = NULL WHERE parent_id = ?`).run(id);
+        db.prepare(`DELETE FROM reaction WHERE comment_id = ?`).run(id);
+        db.prepare(`DELETE FROM comment WHERE id = ?`).run(id);
+      })();
+    },
+
     commentIssueId(commentId) {
       const row = db
         .prepare(`SELECT issue_id AS issueId FROM comment WHERE id = ?`)
@@ -1504,6 +1534,10 @@ export function createStore(db: Database): Store {
             ORDER BY created_at, id`,
         )
         .all(issueId) as ReactionRow[];
+    },
+
+    deleteReaction(id) {
+      db.prepare(`DELETE FROM reaction WHERE id = ?`).run(id);
     },
 
     replaceSubscribers(issueId, userIds) {
@@ -1881,6 +1915,20 @@ export function createStore(db: Database): Store {
       })();
     },
 
+    relation(id) {
+      const row = db
+        .prepare(
+          `SELECT id, issue_id AS issueId, related_issue_id AS relatedIssueId, type
+             FROM relation WHERE id = ?`,
+        )
+        .get(id) as RelationRow | undefined;
+      return row ?? null;
+    },
+
+    deleteRelation(id) {
+      db.prepare(`DELETE FROM relation WHERE id = ?`).run(id);
+    },
+
     relationsFor(issueId) {
       const rows = db
         .prepare(
@@ -1889,6 +1937,7 @@ export function createStore(db: Database): Store {
                   CASE WHEN relation.issue_id = ? THEN 0 ELSE 1 END AS inverse,
                   CASE WHEN relation.issue_id = ?
                        THEN relation.related_issue_id ELSE relation.issue_id END AS counterpartId,
+                  counterpart.team_id AS counterpartTeamId,
                   counterpart.identifier, counterpart.title,
                   counterpart.state_id AS stateId, state.type AS stateType
              FROM relation

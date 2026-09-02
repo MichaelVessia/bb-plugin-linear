@@ -2,6 +2,8 @@ import type { BudgetSnapshot } from "./budget.js";
 import {
   BOOTSTRAP,
   COMMENT_CREATE,
+  COMMENT_DELETE,
+  COMMENT_UPDATE,
   COMMENT_PAGE_SIZE,
   ATTACHMENT_PAGE_SIZE,
   CUSTOMER_NEED_PAGE_SIZE,
@@ -35,6 +37,9 @@ import {
   ISSUE_ARCHIVE,
   ISSUE_CREATE,
   ISSUE_RELATION_CREATE,
+  ISSUE_RELATION_DELETE,
+  REACTION_CREATE,
+  REACTION_DELETE,
   SEARCH_ISSUES,
   SEARCH_PAGE_SIZE,
   TEAM_AUTOMATION,
@@ -65,6 +70,8 @@ import type {
   BreadthResult,
   IssueRelationsResult,
   CommentCreateResult,
+  CommentDeleteResult,
+  CommentUpdateResult,
   IssueDetailResult,
   IssueActivityPageResult,
   IssuesResult,
@@ -75,6 +82,9 @@ import type {
   IssueArchiveResult,
   IssueCreateResult,
   IssueRelationCreateResult,
+  IssueRelationDeleteResult,
+  ReactionCreateResult,
+  ReactionDeleteResult,
   SearchIssuesResult,
   TeamAutomationResult,
   WebhookCreateResult,
@@ -167,6 +177,21 @@ export interface LinearClient {
     options?: CallOptions,
   ): Promise<CommentCreateResult>;
 
+  updateComment(
+    id: string,
+    input: { body: string },
+    options?: CallOptions,
+  ): Promise<CommentUpdateResult>;
+
+  deleteComment(id: string, options?: CallOptions): Promise<CommentDeleteResult>;
+
+  createReaction(
+    input: { id: string; emoji: string; issueId?: string; commentId?: string },
+    options?: CallOptions,
+  ): Promise<ReactionCreateResult>;
+
+  deleteReaction(id: string, options?: CallOptions): Promise<ReactionDeleteResult>;
+
   /** One tick: the batched delta for every bound team, in one request.
    *  Variables come from `planTick`, which is where the page sizes and the
    *  shard decision live. */
@@ -216,6 +241,8 @@ export interface LinearClient {
     input: { issueId: string; relatedIssueId: string; type: string },
     options?: CallOptions,
   ): Promise<IssueRelationCreateResult>;
+
+  deleteRelation(id: string, options?: CallOptions): Promise<IssueRelationDeleteResult>;
 
   /** Link any URL to an issue, richly where Linear recognises it. */
   linkUrl(
@@ -344,6 +371,21 @@ export const createLinearClient: LinearClientFactory = (session, options) => {
     createComment: (input, callOptions) =>
       transport.execute<CommentCreateResult>(COMMENT_CREATE, call(callOptions, { input })),
 
+    updateComment: (id, input, callOptions) =>
+      transport.execute<CommentUpdateResult>(
+        COMMENT_UPDATE,
+        call(callOptions, { id, input }),
+      ),
+
+    deleteComment: (id, callOptions) =>
+      transport.execute<CommentDeleteResult>(COMMENT_DELETE, call(callOptions, { id })),
+
+    createReaction: (input, callOptions) =>
+      transport.execute<ReactionCreateResult>(REACTION_CREATE, call(callOptions, { input })),
+
+    deleteReaction: (id, callOptions) =>
+      transport.execute<ReactionDeleteResult>(REACTION_DELETE, call(callOptions, { id })),
+
     tick: (variables, callOptions) =>
       transport.execute<TickResult>(TICK, call(callOptions, variables)),
 
@@ -400,7 +442,13 @@ export const createLinearClient: LinearClientFactory = (session, options) => {
     createRelation: (input, callOptions) =>
       transport.execute<IssueRelationCreateResult>(
         ISSUE_RELATION_CREATE,
-        call(callOptions, { input }),
+        call(callOptions, input),
+      ),
+
+    deleteRelation: (id, callOptions) =>
+      transport.execute<IssueRelationDeleteResult>(
+        ISSUE_RELATION_DELETE,
+        call(callOptions, { id }),
       ),
 
     linkUrl: (input, callOptions) =>
