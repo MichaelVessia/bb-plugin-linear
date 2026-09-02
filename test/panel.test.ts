@@ -15,7 +15,8 @@ import {
   type RowContext,
 } from "../src/select/panel.js";
 import { estimateLabel, estimateScale } from "../src/select/detail.js";
-import { glyphForTone, priorityMark, toneForStateType } from "../src/select/tone.js";
+import { priorityMark, toneForStateType } from "../src/select/tone.js";
+import { glyphsForStates } from "../src/select/glyph.js";
 import type { PanelFilters } from "../src/contract.js";
 import type { IssueRow, MemberRow, WorkflowStateRow } from "../src/store/rows.js";
 import { createTestStore, issue, member, NOW, state, team } from "./helpers/store.js";
@@ -32,12 +33,14 @@ const NO_FILTERS: PanelFilters = {
 };
 
 function rowContext(overrides: Partial<RowContext> = {}): RowContext {
-  return {
-    states: new Map<string, WorkflowStateRow>([
+  const states = new Map<string, WorkflowStateRow>([
       ["s_progress", state("s_progress", "team_eng", "started", 1, "In Progress")],
       ["s_done", state("s_done", "team_eng", "completed", 2, "Done")],
       ["s_cancel", state("s_cancel", "team_eng", "canceled", 3, "Cancelled")],
-    ]),
+    ]);
+  return {
+    states,
+    glyphs: glyphsForStates([...states.values()]),
     members: new Map<string, MemberRow>([
       ["u_me", member("u_me", "Ada Lovelace", true)],
       ["u_kai", member("u_kai", "Kai Rivers")],
@@ -84,16 +87,6 @@ describe("tone comes from state.type, never from a state name", () => {
     // five members silently drops issues on triage-enabled teams.
     expect(toneForStateType("shipped")).toBe("unknown");
     expect(toneForStateType(null)).toBe("unknown");
-    expect(glyphForTone(toneForStateType("shipped"))).toBe("dot");
-  });
-
-  it("gives the three muted states distinct shapes, not just a shared colour", () => {
-    // Tone alone would be a colour encoding, and three states share the muted
-    // tone. Shape is what carries them apart.
-    const shapes = new Set(
-      (["backlog", "canceled", "duplicate"] as const).map((tone) => glyphForTone(tone)),
-    );
-    expect(shapes.size).toBe(3);
   });
 
   it("marks only Urgent and High", () => {
@@ -204,9 +197,16 @@ describe("the second line appears only when it earns it", () => {
   });
 
   it("ranks sub-issue arithmetic below everything actionable", () => {
-    expect(selectSecondLine({ ...base, subIssues: { done: 3, total: 7 } })?.text).toBe(
-      "3 of 7 done",
-    );
+    expect(
+      selectSecondLine({
+        ...base,
+        subIssues: { done: 3, total: 7 },
+        completedColor: "#44AA66",
+      }),
+    ).toMatchObject({
+      text: "3 of 7 done",
+      progress: { done: 3, total: 7, color: "#44AA66" },
+    });
     // And says nothing at all when there are no sub-issues.
     expect(selectSecondLine({ ...base, subIssues: { done: 0, total: 0 } })).toBeNull();
   });
@@ -227,6 +227,8 @@ describe("grouping", () => {
     states: rowContext().states,
     members: rowContext().members,
     projectNames: new Map<string, string>(),
+    projectGlyphs: new Map(),
+    glyphs: rowContext().glyphs,
     cycleNames: new Map<string, string>(),
   };
 
@@ -244,6 +246,23 @@ describe("grouping", () => {
     const issues = [row({ id: "a", stateId: "s_progress" }), row({ id: "b", stateId: "s_progress" })];
     const views = issues.map((i) => selectRow(i, rowContext()));
     expect(groupRows(issues, views, context)[0]?.count).toBe(2);
+  });
+
+  it("carries the configured project glyph only on project group headers", () => {
+    const projectGlyph = { type: "started", color: "#5E6AD2", progress: 0.625 };
+    const issues = [row({ id: "a", projectId: "project_1" })];
+    const views = issues.map((i) => selectRow(i, rowContext()));
+    const groups = groupRows(issues, views, {
+      ...context,
+      grouping: "project",
+      projectNames: new Map([["project_1", "Glyph parity"]]),
+      projectGlyphs: new Map([["project_1", projectGlyph]]),
+    });
+    expect(groups[0]).toMatchObject({
+      label: "Glyph parity",
+      glyph: null,
+      projectGlyph,
+    });
   });
 
   it("puts the viewer's own work first when grouping by assignee, and unassigned last", () => {
@@ -401,12 +420,47 @@ describe("buildPanelView", () => {
     const view = buildPanelView(d, query);
     if (view.state.kind !== "rows") throw new Error("expected rows");
     expect(view.state.groups[0]?.rows[0]?.lead).toBe("bb-fact");
+    expect(view.state.groups[0]?.rows[0]?.glyph).toMatchObject({
+      ring: "solid",
+      pie: 0.5,
+    });
+    expect(view.state.groups[0]?.glyph).toEqual(view.state.groups[0]?.rows[0]?.glyph);
 
     // And the Linear state when the grouping is something else, because then
     // the glyph column varies again.
     const byAssignee = buildPanelView(d, { ...query, grouping: "assignee" });
     if (byAssignee.state.kind !== "rows") throw new Error("expected rows");
     expect(byAssignee.state.groups[0]?.rows[0]?.lead).toBe("state");
+  });
+
+  it("joins project progress to its workspace status colour", () => {
+    const d = deps();
+    d.store.replaceProjectStatuses([
+      { id: "status_started", name: "In progress", type: "started", position: 1, color: "#5E6AD2" },
+    ]);
+    d.store.putProjects(
+      [{
+        id: "project_1",
+        name: "Glyph parity",
+        description: null,
+        url: null,
+        statusId: "status_started",
+        leadId: null,
+        startDate: null,
+        targetDate: null,
+        progress: 0.625,
+        updatedAt: NOW,
+      }],
+      [{ projectId: "project_1", teamId: "team_eng" }],
+    );
+    d.store.putIssues([issue({ id: "1", stateId: "s_progress", projectId: "project_1" })], NOW);
+    const view = buildPanelView(d, { ...query, grouping: "project" });
+    if (view.state.kind !== "rows") throw new Error("expected rows");
+    expect(view.state.groups[0]?.projectGlyph).toEqual({
+      type: "started",
+      color: "#5E6AD2",
+      progress: 0.625,
+    });
   });
 
   it("names every active facet in the user's own vocabulary", () => {

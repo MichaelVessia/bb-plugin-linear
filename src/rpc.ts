@@ -12,6 +12,7 @@ import { z } from "zod";
 import {
   rpcContract as legacyContract,
   stateOptionSchema,
+  glyphSpecSchema,
   toneSchema,
 } from "./contract.js";
 import { defineRpcContract } from "./sdk-runtime.js";
@@ -26,6 +27,7 @@ export const threadIssueSchema = z.object({
       title: z.string(),
       stateName: z.string(),
       tone: toneSchema,
+      glyph: glyphSpecSchema,
       url: z.string().nullable(),
       /** How the binding was made — shown so trust is inspectable. */
       origin: z.enum(["spawn", "manual", "branch", "message"]),

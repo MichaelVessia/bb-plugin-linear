@@ -83,6 +83,7 @@ describe("mirror-only picker projections", () => {
     expect(rows).toHaveLength(20);
     expect(rows.every((row) => row.identifier.startsWith("ENG-"))).toBe(true);
     expect(rows.every((row) => row.tone === "started")).toBe(true);
+    expect(rows.every((row) => row.glyph.pie === 0.5)).toBe(true);
   });
 
   it("filters team members and caps mention candidates at ten", () => {

@@ -75,11 +75,20 @@ The binding is injected into every agent turn's instructions, so agents in
 
 ## The issue pane
 
-The bound issue — or any issue you open — in full: description, properties
-with in-place editors (state, assignee, priority, estimate, labels, project,
-cycle, due date), sub-issue progress, comments with Markdown. The `···` menu
-starts a thread from the issue, copies its identifier or branch name, or
-archives it behind a confirmation.
+The bound issue — or any issue you open — the way Linear shows it: the parent
+it belongs to, a description and title you edit in place, properties with
+in-place editors (state, assignee, priority, estimate, labels, project, cycle,
+due date), subscribers, sub-issues with Linear's progress ring, relations in
+every direction, resources grouped by source (pull requests, documents,
+links), customer requests, and an **activity timeline** — history events and
+comments in one chronological feed, in Linear's own phrasing, with nested
+replies, resolved threads, reactions, an unread divider, a show-activity
+toggle and "show older" paging. Screenshots pasted into Linear render too,
+through a proxy pinned to Linear's upload host; every other remote image
+stays a link. From the pane you can react, edit or delete your own comments,
+@mention teammates, add a link, set a parent or add a sub-issue, and add or
+remove relations. The `···` menu starts a thread from the issue, copies its
+identifier or branch name, or archives it behind a confirmation.
 
 <p align="center">
   <img src="./assets/readme/detail.png" alt="The issue side panel: description, editable properties, comments" width="480">
@@ -136,6 +145,10 @@ readable and writable. A bundled skill teaches the conventions.
   lift the issue into the team's started state; a merged PR can move it per
   the team's own Linear git automation. Off, because two writers fighting
   over one card is worse than either alone.
+- **Linear's own status icons** — the same ring, the same inner pie that
+  grows with a state's position among the started states, the same disc with
+  a check or an X, in each state's configured colour; parent issues carry
+  Linear's sub-issue progress ring.
 - **Binds itself only on explicit evidence** — an issue key in a branch or
   thread title that names exactly one visible team binds the project to it,
   announced with an undo; anything fuzzier becomes an offer in the panel,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Markdown, useBbNavigate, useRealtime } from "@bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,8 @@ import { useAsync, useLinearRpc } from "./rpc.js";
 import { safeRemoteMarkdown } from "../src/security-boundaries.js";
 import { ReactionChips, Timeline } from "./Timeline.js";
 import { NewIssueDialog } from "./NewIssue.js";
+import { ProgressRing } from "./ProgressRing.js";
+import { ProjectGlyph } from "./ProjectGlyph.js";
 import {
   AddLinkDialog,
   ParentPickerDialog,
@@ -208,7 +210,10 @@ function IssueBody({
   }, [rpc, id, onReload]);
 
   return (
-    <div className={`${toneClass(detail.tone)} flex h-full flex-col`}>
+    <div
+      className={`${toneClass(detail.tone)} flex h-full flex-col`}
+      style={detail.stateColor === null ? undefined : ({ "--bbl": detail.stateColor } as CSSProperties)}
+    >
       {/* The body scrolls inside a fixed cap and the composer is pinned
           outside the scroller — a control that scrolls out of its own panel is
           one you have to hunt for. */}
@@ -219,7 +224,7 @@ function IssueBody({
           question the pane must never make you scroll back up to answer.
         */}
         <header className="bbl-section sticky top-0 z-10 flex items-center gap-2 px-4 py-2">
-          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+          <span className="bbl-text font-mono text-[11px] tabular-nums">
             {detail.identifier}
           </span>
           {detail.teamName === "" ? null : (
@@ -298,7 +303,7 @@ function IssueBody({
               <StatePicker detail={detail} busy={busy} onChange={onChange} issueId={id} />
             ) : (
               <span className="inline-flex h-7 items-center gap-1.5 text-xs text-foreground">
-                <StateGlyph tone={detail.tone} />
+                <StateGlyph tone={detail.tone} glyph={detail.glyph} />
                 {detail.stateName}
               </span>
             )}
@@ -361,8 +366,9 @@ function IssueBody({
                 <li
                   key={child.id}
                   className={`${toneClass(child.tone)} flex items-center gap-2.5 rounded-md px-1 py-1`}
+                  style={child.glyph.color === null ? undefined : ({ "--bbl": child.glyph.color } as CSSProperties)}
                 >
-                  <StateGlyph tone={child.tone} />
+                  <StateGlyph tone={child.tone} glyph={child.glyph} />
                   <span className="w-[4.75rem] shrink-0 truncate font-mono text-[11px] tabular-nums text-muted-foreground">
                     {child.identifier}
                   </span>
@@ -444,7 +450,7 @@ function StatePicker({
           // anything navigating by accessible name.
           aria-label={`Change state — currently ${detail.stateName}`}
         >
-          <StateGlyph tone={detail.tone} />
+          <StateGlyph tone={detail.tone} glyph={detail.glyph} />
           {detail.stateName}
           <Icon name="ChevronDown" className="size-3" aria-hidden />
         </Button>
@@ -457,9 +463,10 @@ function StatePicker({
           <DropdownMenuItem
             key={option.id}
             className={toneClass(option.tone)}
+            style={option.glyph.color === null ? undefined : ({ "--bbl": option.glyph.color } as CSSProperties)}
             onSelect={() => onChange({ id: issueId, stateId: option.id })}
           >
-            <StateGlyph tone={option.tone} />
+            <StateGlyph tone={option.tone} glyph={option.glyph} />
             <span>{option.name}</span>
             {option.id === detail.stateId ? (
               <Icon name="Check" className="ml-auto size-3.5" aria-hidden />
@@ -641,7 +648,12 @@ function ReadOnlyProperties({ properties }: { properties: DetailView["properties
           <dt className="flex min-h-7 items-center text-[11px] uppercase tracking-[0.06em] text-muted-foreground opacity-70">
             {property.label}
           </dt>
-          <dd className="min-w-0 truncate px-1.5 text-foreground">{property.value}</dd>
+          <dd className="flex min-w-0 items-center gap-1.5 truncate px-1.5 text-foreground">
+            {property.projectGlyph === undefined ? null : (
+              <ProjectGlyph glyph={property.projectGlyph} />
+            )}
+            <span className="truncate">{property.value}</span>
+          </dd>
         </div>
       ))}
     </dl>
@@ -655,8 +667,20 @@ function SubIssuesHeader({ detail, onReload }: { detail: DetailView; onReload: (
       <div className="flex items-center gap-2">
         <SectionLabel>
           Sub-issues
-          <span className="bbl-count ml-1.5 rounded-full px-1.5 py-px tabular-nums">
-            {detail.subIssues.filter((child) => child.done).length} of {detail.subIssues.length}
+          <span
+            className="ml-1.5 inline-flex items-center gap-1.5 tabular-nums"
+            role="img"
+            aria-label={`${detail.subIssues.filter((child) => child.done).length} of ${detail.subIssues.length} done`}
+            title={`${detail.subIssues.filter((child) => child.done).length} of ${detail.subIssues.length} done`}
+          >
+            <ProgressRing
+              done={detail.subIssues.filter((child) => child.done).length}
+              total={detail.subIssues.length}
+              color={detail.completedStateColor}
+            />
+            <span aria-hidden="true">
+              {detail.subIssues.filter((child) => child.done).length}/{detail.subIssues.length}
+            </span>
           </span>
         </SectionLabel>
         {detail.writable ? (
@@ -972,9 +996,10 @@ function Relations({
                   <button
                     type="button"
                     className={`${toneClass(relation.tone)} flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-1 py-1 text-left hover:bg-state-hover`}
+                    style={relation.glyph.color === null ? undefined : ({ "--bbl": relation.glyph.color } as CSSProperties)}
                     onClick={() => onOpen(relation.identifier)}
                   >
-                    <StateGlyph tone={relation.tone} />
+                    <StateGlyph tone={relation.tone} glyph={relation.glyph} />
                     <span className="w-[4.75rem] shrink-0 truncate font-mono text-[11px] tabular-nums text-muted-foreground">
                       {relation.identifier}
                     </span>

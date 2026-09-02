@@ -1,9 +1,10 @@
-import { useCallback } from "react";
+import { useCallback, type CSSProperties } from "react";
 import { useBbNavigate, useRealtime } from "@bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useAsync, useLinearRpc } from "./rpc.js";
 import { StateGlyph } from "./StateGlyph.js";
+import { toneClass } from "../src/select/tone.js";
 
 /**
  * The thread header's one control: which issue this thread is working on.
@@ -36,7 +37,8 @@ export function HeaderChip({ threadId }: { threadId: string; projectId: string |
       <Button
         size="sm"
         variant="ghost"
-        className="h-7 gap-1.5 px-2 text-xs font-medium"
+        className={`${toneClass(binding.tone)} h-7 gap-1.5 px-2 text-xs font-medium`}
+        style={binding.glyph.color === null ? undefined : ({ "--bbl": binding.glyph.color } as CSSProperties)}
         aria-label={`Linear issue ${binding.identifier} · ${binding.title} — ${binding.stateName}, bound via ${binding.origin}`}
         onClick={() => {
           navigate.openThreadPanel({ actionId: "issue", title: binding.identifier });
@@ -45,8 +47,8 @@ export function HeaderChip({ threadId }: { threadId: string; projectId: string |
         {/* The same shaped glyph the panel's rows draw — one state language
             everywhere, so "half-filled ring" means started in the header
             exactly as it does in the list. */}
-        <StateGlyph tone={binding.tone} />
-        {binding.identifier}
+        <StateGlyph tone={binding.tone} glyph={binding.glyph} />
+        <span className="bbl-text">{binding.identifier}</span>
       </Button>
     );
   }

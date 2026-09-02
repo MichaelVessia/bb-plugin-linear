@@ -23,7 +23,10 @@ describe("selectDetail pane parity", () => {
       writable: true,
       writableTeamIds: new Set(["team_eng"]),
       team: { ...team("team_eng", "ENG"), fetchedAt: NOW },
-      states: [state("s1", "team_eng", "started", 1, "Building")],
+      states: [
+        { ...state("s1", "team_eng", "started", 1, "Building"), color: "#5E6AD2" },
+        { ...state("done", "team_eng", "completed", 2, "Done"), color: "#44AA66" },
+      ],
       members: new Map([["u1", jane]]),
       labels: new Map(),
       priorityLabels: new Map([[0, "None"]]),
@@ -41,8 +44,15 @@ describe("selectDetail pane parity", () => {
         resolvingUserId: "u1",
       }],
       commentsTruncated: true,
-      subIssues: [],
-      projectName: null,
+      subIssues: [{
+        id: "child",
+        identifier: "ENG-2",
+        title: "Verify the glyph",
+        stateId: "done",
+        type: "completed",
+      }],
+      projectName: "Glyph parity",
+      projectGlyph: { type: "started", color: "#5E6AD2", progress: 0.625 },
       cycleName: null,
       milestoneName: null,
       attachments: [{
@@ -106,5 +116,19 @@ describe("selectDetail pane parity", () => {
     expect(view.timeline.map((entry) => entry.kind)).toEqual(["event", "event", "comment"]);
     expect(view.unreadBoundaryAt).toBe(NOW - 1);
     expect(view.activity).toEqual({ showActivity: false, hasOlder: true });
+    expect(view).toMatchObject({
+      stateColor: "#5E6AD2",
+      glyph: { pie: 0.5, color: "#5E6AD2" },
+      completedStateColor: "#44AA66",
+      fields: {
+        projectGlyph: { type: "started", color: "#5E6AD2", progress: 0.625 },
+      },
+    });
+    expect(view.properties.find((property) => property.key === "project")?.projectGlyph)
+      .toEqual({ type: "started", color: "#5E6AD2", progress: 0.625 });
+    expect(view.subIssues[0]).toMatchObject({
+      done: true,
+      glyph: { disc: true, mark: "check", color: "#44AA66" },
+    });
   });
 });

@@ -15,6 +15,11 @@ import {
 } from "./select/panel.js";
 import { toneForStateType } from "./select/tone.js";
 import {
+  glyphsForStates,
+  projectGlyphSpec,
+  type ProjectGlyphSpec,
+} from "./select/glyph.js";
+import {
   isWorkingSetEmpty,
   nonEmpty,
   selectWorkingSet,
@@ -147,6 +152,8 @@ export function buildPanelView(deps: PanelDeps, query: PanelQuery): PanelView {
   const priorityLabels = new Map<number, string>(
     deps.store.priorityValues(teamIds).map((value) => [value.priority, value.label]),
   );
+  const glyphs = glyphsForStates([...states.values()]);
+  const completedColors = completedColorsByTeam([...states.values()]);
 
   const issueIds = issues.map((issue) => issue.id);
   const progress = deps.store.subIssueProgress(issueIds);
@@ -164,8 +171,23 @@ export function buildPanelView(deps: PanelDeps, query: PanelQuery): PanelView {
       .flatMap((teamId) => deps.store.cycles(teamId))
       .map((cycle) => [cycle.id, cycle.name ?? `Cycle ${cycle.number}`] as const),
   );
-  const projectNames = new Map(
-    deps.store.projects(teamIds).map((project) => [project.id, project.name] as const),
+  const projects = deps.store.projects(teamIds);
+  const projectNames = new Map(projects.map((project) => [project.id, project.name] as const));
+  const projectStatuses = new Map(
+    deps.store.projectStatuses(teamIds).map((status) => [status.id, status] as const),
+  );
+  const projectGlyphs = new Map<string, ProjectGlyphSpec>(
+    projects.map((project) => {
+      const status = project.statusId === null ? null : (projectStatuses.get(project.statusId) ?? null);
+      return [
+        project.id,
+        projectGlyphSpec({
+          type: status?.type ?? "",
+          color: status?.color ?? null,
+          progress: project.progress,
+        }),
+      ];
+    }),
   );
   // A cycle name earns its place on a row only when the view spans cycles —
   // inside a single-cycle filter it is the same string on every row, which
@@ -175,6 +197,7 @@ export function buildPanelView(deps: PanelDeps, query: PanelQuery): PanelView {
 
   const context = {
     states,
+    glyphs,
     members,
     priorityLabels,
     now: deps.now(),
@@ -193,6 +216,7 @@ export function buildPanelView(deps: PanelDeps, query: PanelQuery): PanelView {
         pr: pullRequests.get(issue.id) ?? null,
         blockedBy: blockers.get(issue.id) ?? [],
         subIssues: progress.get(issue.id) ?? null,
+        completedColor: completedColors.get(issue.teamId) ?? null,
         cycleName: issue.cycleId === null ? null : (cycleNames.get(issue.cycleId) ?? null),
         showCycle: spansCycles,
       },
@@ -214,6 +238,8 @@ export function buildPanelView(deps: PanelDeps, query: PanelQuery): PanelView {
       states,
       members,
       projectNames,
+      projectGlyphs,
+      glyphs,
       cycleNames,
     },
     total,
@@ -229,6 +255,8 @@ function emptyGroupingContext(grouping: Grouping) {
     states: new Map<string, WorkflowStateRow>(),
     members: new Map<string, MemberRow>(),
     projectNames: new Map<string, string>(),
+    projectGlyphs: new Map<string, ProjectGlyphSpec>(),
+    glyphs: new Map(),
     cycleNames: new Map<string, string>(),
   };
 }
@@ -354,6 +382,7 @@ export function buildRowViews(deps: PanelDeps, issues: readonly IssueRow[]): Iss
 
   const context = {
     states,
+    glyphs: glyphsForStates([...states.values()]),
     members: new Map(
       deps.store
         .membersByIds(
@@ -406,6 +435,8 @@ export function buildWorkingSet(deps: PanelDeps, team: string | null): WorkingSe
   const priorityLabels = new Map(
     deps.store.priorityValues(teamIds).map((value) => [value.priority, value.label]),
   );
+  const glyphs = glyphsForStates([...states.values()]);
+  const completedColors = completedColorsByTeam([...states.values()]);
 
   const links = deps.store.threadLinksForIssues(issueIds);
   const prRows = deps.store.prStatesByIssue(issueIds);
@@ -440,6 +471,7 @@ export function buildWorkingSet(deps: PanelDeps, team: string | null): WorkingSe
   const byId = new Map(issues.map((issue) => [issue.id, issue]));
   const context = {
     states,
+    glyphs,
     members,
     priorityLabels,
     now: deps.now(),
@@ -470,6 +502,7 @@ export function buildWorkingSet(deps: PanelDeps, team: string | null): WorkingSe
               pr: prByIssue.get(issue.id) ?? null,
               blockedBy: blockers.get(issue.id) ?? [],
               subIssues: progress.get(issue.id) ?? null,
+              completedColor: completedColors.get(issue.teamId) ?? null,
               showCycle: false,
             },
             deps.bbFacts?.get(issue.id) ?? "none",
@@ -477,6 +510,17 @@ export function buildWorkingSet(deps: PanelDeps, team: string | null): WorkingSe
         ),
     })),
   };
+}
+
+/** First completed state by position, separately for each team. */
+function completedColorsByTeam(states: readonly WorkflowStateRow[]): ReadonlyMap<string, string | null> {
+  const result = new Map<string, string | null>();
+  for (const state of [...states].sort((a, b) => a.position - b.position)) {
+    if (state.type === "completed" && !result.has(state.teamId)) {
+      result.set(state.teamId, state.color);
+    }
+  }
+  return result;
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */

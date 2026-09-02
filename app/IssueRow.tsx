@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type CSSProperties } from "react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -11,6 +11,7 @@ import type { IssueRowView } from "../src/contract.js";
 import { priorityToneClass, toneClass } from "../src/select/tone.js";
 import { safeHref } from "./href.js";
 import { BbFactGlyph, describeBbFact, StateGlyph } from "./StateGlyph.js";
+import { ProgressRing } from "./ProgressRing.js";
 
 export interface RowActions {
   start: (id: string) => void;
@@ -104,11 +105,12 @@ function RowBody({
       className={`${toneClass(row.tone)} bbl-row group relative flex cursor-pointer flex-col gap-0.5 rounded-md py-1.5 pl-2 pr-1.5 ${
         selected ? "bbl-row-selected" : "hover:bg-state-hover"
       }`}
+      style={row.glyph.color === null ? undefined : ({ "--bbl": row.glyph.color } as CSSProperties)}
       onClick={() => onOpen(row.id)}
     >
       <div className="flex min-w-0 items-center gap-2.5">
         {row.lead === "state" ? (
-          <StateGlyph tone={row.tone} />
+          <StateGlyph tone={row.tone} glyph={row.glyph} />
         ) : (
           <BbFactGlyph fact={row.bbFact} />
         )}
@@ -197,7 +199,21 @@ function RowBody({
       {row.secondLine !== null ? (
         <div className={`${toneClass(row.secondLine.tone)} flex items-center gap-2.5 pl-[1.5rem]`}>
           <span className="w-[4.75rem] shrink-0" aria-hidden />
-          <span className="bbl-text truncate text-[11px]">{row.secondLine.text}</span>
+          {row.secondLine.kind === "sub-issues" && row.secondLine.progress !== undefined ? (
+            <span
+              className="bbl-text flex items-center gap-1.5 truncate text-[11px]"
+              role="img"
+              aria-label={row.secondLine.text}
+              title={row.secondLine.text}
+            >
+              <ProgressRing {...row.secondLine.progress} size={14} />
+              <span aria-hidden="true">
+                {row.secondLine.progress.done}/{row.secondLine.progress.total}
+              </span>
+            </span>
+          ) : (
+            <span className="bbl-text truncate text-[11px]">{row.secondLine.text}</span>
+          )}
         </div>
       ) : null}
 

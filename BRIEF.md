@@ -400,3 +400,17 @@ checklist maintained in `docs/smoke.md` from M2 on.
 - "Add sub-issue…" lives beside the sub-issue section heading instead of in
   the issue menu. Beat: hiding a section-specific action behind a global menu;
   the shared dialog still locks the team and presets the parent as designed.
+
+## 2026-09-02 — v0.3.0 Linear glyph parity
+
+- Status glyphs reproduce Linear's own ring, pie, disc and mark geometry in
+  each workflow state's configured colour. Beat: type-only tone glyphs, which
+  ignored the team's palette and could not distinguish In Progress from In
+  Review.
+- Started-state fill is `0.5 + 0.5 × (index / count)`, indexed by position
+  within that team's started states. Linear's DOM showed one started state at
+  0.5 and two at 0.5 and 0.75.
+- Duplicate uses the canceled-family full disc and X; this is inferred because
+  no duplicate issue was available. Triage uses a solid ring and centred dot;
+  this is unverified because no triage-enabled team was available. Verify both
+  against Linear's DOM with a duplicate issue and a triage-enabled team.

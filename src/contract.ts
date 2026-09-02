@@ -108,6 +108,22 @@ const _toneBack: z.infer<typeof toneSchema> = "unknown" as Tone;
 void _toneForward;
 void _toneBack;
 
+export const glyphSpecSchema = z.object({
+  ring: z.enum(["solid", "dashed"]),
+  pie: z.number().min(0).max(1).nullable(),
+  disc: z.boolean(),
+  mark: z.enum(["check", "x", "dot"]).nullable(),
+  color: z.string().nullable(),
+});
+export type GlyphSpecView = z.infer<typeof glyphSpecSchema>;
+
+export const projectGlyphSpecSchema = z.object({
+  type: z.string(),
+  color: z.string().nullable(),
+  progress: z.number().min(0).max(1),
+});
+export type ProjectGlyphSpecView = z.infer<typeof projectGlyphSpecSchema>;
+
 export const assigneeViewSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -120,6 +136,9 @@ export const secondLineSchema = z.object({
   kind: z.enum(["pr", "due", "blocked", "sub-issues", "cycle"]),
   text: z.string(),
   tone: toneSchema,
+  progress: z
+    .object({ done: z.number().int().nonnegative(), total: z.number().int().positive(), color: z.string().nullable() })
+    .optional(),
 });
 export type SecondLine = z.infer<typeof secondLineSchema>;
 export type SecondLineKind = SecondLine["kind"];
@@ -160,6 +179,7 @@ export const issueRowViewSchema = z.object({
   url: z.string().nullable(),
   stateName: z.string(),
   tone: toneSchema,
+  glyph: glyphSpecSchema,
   lead: leadKindSchema,
   bbFact: bbFactSchema,
   assignee: assigneeViewSchema.nullable(),
@@ -180,6 +200,8 @@ export const issueGroupSchema = z.object({
   /** **Post-filter, always.** */
   count: z.number(),
   tone: toneSchema,
+  glyph: glyphSpecSchema.nullable(),
+  projectGlyph: projectGlyphSpecSchema.nullable(),
   rows: z.array(issueRowViewSchema),
 });
 export type IssueGroup = z.infer<typeof issueGroupSchema>;
@@ -273,6 +295,7 @@ export const propertyViewSchema = z.object({
   label: z.string(),
   value: z.string(),
   tone: toneSchema.optional(),
+  projectGlyph: projectGlyphSpecSchema.optional(),
 });
 export type PropertyView = z.infer<typeof propertyViewSchema>;
 
@@ -316,6 +339,7 @@ export const relationViewSchema = z.object({
   identifier: z.string(),
   title: z.string(),
   tone: toneSchema,
+  glyph: glyphSpecSchema,
   done: z.boolean(),
   /** Unrelating changes both ends, so both teams must be writable. */
   removable: z.boolean(),
@@ -345,6 +369,7 @@ export const stateOptionSchema = z.object({
   name: z.string(),
   type: z.string(),
   tone: toneSchema,
+  glyph: glyphSpecSchema,
 });
 export type StateOption = z.infer<typeof stateOptionSchema>;
 
@@ -353,6 +378,7 @@ export const subIssueViewSchema = z.object({
   identifier: z.string(),
   title: z.string(),
   tone: toneSchema,
+  glyph: glyphSpecSchema,
   done: z.boolean(),
 });
 export type SubIssueView = z.infer<typeof subIssueViewSchema>;
@@ -373,6 +399,9 @@ export const detailViewSchema = z.object({
   stateId: z.string().nullable(),
   stateName: z.string(),
   tone: toneSchema,
+  stateColor: z.string().nullable(),
+  glyph: glyphSpecSchema,
+  completedStateColor: z.string().nullable(),
   struckThrough: z.boolean(),
   stateOptions: z.array(stateOptionSchema),
   properties: z.array(propertyViewSchema),
@@ -397,6 +426,7 @@ export const detailViewSchema = z.object({
     dueDateLabel: z.string().nullable(),
     projectId: z.string().nullable(),
     projectName: z.string().nullable(),
+    projectGlyph: projectGlyphSpecSchema.nullable(),
     cycleId: z.string().nullable(),
     cycleName: z.string().nullable(),
   }),
@@ -539,6 +569,7 @@ export const threadIssueSchema = z.object({
       stateId: z.string().nullable(),
       stateName: z.string(),
       tone: toneSchema,
+      glyph: glyphSpecSchema,
       url: z.string().nullable(),
       stateOptions: z.array(stateOptionSchema),
     })
@@ -992,6 +1023,7 @@ export const rpcContract = defineRpcContract({
           identifier: z.string(),
           title: z.string(),
           tone: toneSchema,
+          glyph: glyphSpecSchema,
         }),
       ),
     }),

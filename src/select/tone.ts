@@ -1,6 +1,5 @@
 /**
- * State tone and glyph, derived from `WorkflowState.type` and never from a
- * state's name.
+ * State tone, derived from `WorkflowState.type` and never from a state's name.
  *
  * A workspace's review column is called "In Review", or "Überprüfung", or
  * "レビュー", or "Almost there". Matching on the name means matching on
@@ -11,9 +10,7 @@
  *
  * **Except that it is a `String`, not an enum.** Linear adds members. An
  * exhaustive switch over five of them silently drops issues on triage-enabled
- * teams, so an unrecognised value is a first-class case here: it renders as a
- * plain dot beside the team's own state name, which is a worse row than the
- * others and a much better row than a missing one.
+ * teams, so an unrecognised value is a first-class neutral case here.
  */
 
 export const STATE_TYPES = [
@@ -40,40 +37,6 @@ export function toneForStateType(type: string | null | undefined): Tone {
  *  a state change recolours the whole row from a single class swap. */
 export function toneClass(tone: Tone): string {
   return `bbl-${tone}`;
-}
-
-/**
- * The distinct shape each state gets.
- *
- * Three of the seven states are muted — `backlog`, `canceled` and
- * `duplicate` — so tone alone cannot tell them apart, and tone alone would be
- * a colour encoding besides. Each one gets a *shape* instead: a dashed ring, a
- * ring with a slash, a ring with an inward chevron. Colour then reinforces
- * rather than carries.
- */
-export type GlyphShape =
-  | "dotted-ring"
-  | "dashed-ring"
-  | "empty-ring"
-  | "progress-ring"
-  | "checked-ring"
-  | "slashed-ring"
-  | "folded-ring"
-  | "dot";
-
-const SHAPES: Record<Tone, GlyphShape> = {
-  triage: "dotted-ring",
-  backlog: "dashed-ring",
-  unstarted: "empty-ring",
-  started: "progress-ring",
-  completed: "checked-ring",
-  canceled: "slashed-ring",
-  duplicate: "folded-ring",
-  unknown: "dot",
-};
-
-export function glyphForTone(tone: Tone): GlyphShape {
-  return SHAPES[tone];
 }
 
 /** A canceled issue's title is struck through as well as marked, because

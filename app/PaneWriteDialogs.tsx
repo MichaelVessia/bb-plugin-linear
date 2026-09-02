@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,12 +20,14 @@ import { StateGlyph } from "./StateGlyph.js";
 import { toneClass } from "../src/select/tone.js";
 import type { PaneRelationType } from "../src/pane-write.js";
 import { useAsync, useLinearRpc } from "./rpc.js";
+import type { GlyphSpec } from "../src/select/glyph.js";
 
 interface PickerIssue {
   readonly id: string;
   readonly identifier: string;
   readonly title: string;
   readonly tone: "triage" | "backlog" | "unstarted" | "started" | "completed" | "canceled" | "duplicate" | "unknown";
+  readonly glyph: GlyphSpec;
 }
 
 function IssuePicker({
@@ -83,9 +85,10 @@ function IssuePicker({
                 <button
                   type="button"
                   className={`${toneClass(issue.tone)} flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-state-hover`}
+                  style={issue.glyph.color === null ? undefined : ({ "--bbl": issue.glyph.color } as CSSProperties)}
                   onClick={() => onSelect(issue)}
                 >
-                  <StateGlyph tone={issue.tone} />
+                  <StateGlyph tone={issue.tone} glyph={issue.glyph} />
                   <span className="w-[4.75rem] shrink-0 truncate font-mono text-[11px] tabular-nums text-muted-foreground">
                     {issue.identifier}
                   </span>

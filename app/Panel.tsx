@@ -19,6 +19,8 @@ import { IssueDetail } from "./Detail.js";
 import { InboxBadge, InboxSegment, useInboxCount } from "./Inbox.js";
 import { IssueRow, type RowActions } from "./IssueRow.js";
 import { StateGlyph } from "./StateGlyph.js";
+import { ProjectGlyph } from "./ProjectGlyph.js";
+import { COMPLETED_GLYPH_SPEC } from "../src/select/glyph.js";
 import { useAsync, useLinearRpc } from "./rpc.js";
 
 /**
@@ -645,6 +647,9 @@ function GroupedRows({
                       className="size-3"
                       aria-hidden
                     />
+                    {group.projectGlyph === null ? null : (
+                      <ProjectGlyph glyph={group.projectGlyph} />
+                    )}
                     <span className="truncate">{group.label}</span>
                     {/* Post-filter, always. The filter row above already names
                         the filter, so there is nothing for a total to
@@ -814,7 +819,7 @@ function WorkingSet({
         <div className="w-full max-w-sm space-y-4">
           <div className="flex items-center gap-2.5">
             <span className="bbl-completed bbl-glyph">
-              <StateGlyph tone="completed" className="size-5" />
+              <StateGlyph tone="completed" glyph={COMPLETED_GLYPH_SPEC} className="size-5" />
             </span>
             <p className="text-sm font-medium text-foreground">Nothing needs you right now.</p>
           </div>

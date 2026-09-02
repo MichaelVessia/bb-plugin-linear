@@ -93,6 +93,10 @@
   color: var(--bbl);
 }
 
+.bbl-progress-track {
+  stroke: color-mix(in oklab, currentColor 18%, transparent);
+}
+
 /*
  * ── Surfaces ─────────────────────────────────────────────────────────────────
  */

@@ -1,8 +1,9 @@
-import { useCallback } from "react";
+import { useCallback, type CSSProperties } from "react";
 import type { PluginMessageDirectiveProps } from "@bb/plugin-sdk/app";
 import { useBbNavigate } from "@bb/plugin-sdk/app";
 import { StateGlyph } from "./StateGlyph.js";
 import { useAsync, useLinearRpc } from "./rpc.js";
+import { toneClass } from "../src/select/tone.js";
 
 /**
  * `::linear{key="ENG-42"}` — an issue named in chat, rendered as the issue.
@@ -39,7 +40,8 @@ function DirectiveCard({ identifier, source }: { identifier: string; source: str
   return (
     <button
       type="button"
-      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-card px-1.5 py-0.5 align-middle text-[13px] hover:bg-accent"
+      className={`${toneClass(detail.tone)} inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-card px-1.5 py-0.5 align-middle text-[13px] hover:bg-accent`}
+      style={detail.stateColor === null ? undefined : ({ "--bbl": detail.stateColor } as CSSProperties)}
       onClick={() => {
         navigate.openThreadPanel({
           actionId: "issue",
@@ -49,8 +51,8 @@ function DirectiveCard({ identifier, source }: { identifier: string; source: str
       }}
       title={`${detail.identifier} — ${detail.title}`}
     >
-      <StateGlyph tone={detail.tone} />
-      <span className="font-medium text-foreground">{detail.identifier}</span>
+      <StateGlyph tone={detail.tone} glyph={detail.glyph} />
+      <span className="bbl-text font-medium">{detail.identifier}</span>
       <span className={`truncate text-muted-foreground${detail.struckThrough ? " line-through" : ""}`}>
         {detail.title}
       </span>

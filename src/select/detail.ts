@@ -25,6 +25,12 @@ import type {
 } from "../store/rows.js";
 import type { IssueRow } from "../store/rows.js";
 import { toneForStateType, type Tone } from "./tone.js";
+import {
+  glyphSpec,
+  glyphsForStates,
+  type GlyphSpec,
+  type ProjectGlyphSpec,
+} from "./glyph.js";
 
 /**
  * The detail pane, as data.
@@ -44,13 +50,22 @@ export interface DetailContext {
   readonly writableTeamIds: ReadonlySet<string>;
   readonly team: TeamRow | null;
   readonly states: readonly WorkflowStateRow[];
+  /** Includes cross-team relation states without widening the state picker. */
+  readonly glyphs?: ReadonlyMap<string, GlyphSpec>;
   readonly members: ReadonlyMap<string, MemberRow>;
   readonly labels: ReadonlyMap<string, LabelRow>;
   readonly priorityLabels: ReadonlyMap<number, string>;
   readonly comments: readonly CommentRow[];
   readonly commentsTruncated: boolean;
-  readonly subIssues: readonly { id: string; identifier: string; title: string; type: string }[];
+  readonly subIssues: readonly {
+    id: string;
+    identifier: string;
+    title: string;
+    stateId: string | null;
+    type: string;
+  }[];
   readonly projectName: string | null;
+  readonly projectGlyph: ProjectGlyphSpec | null;
   readonly cycleName: string | null;
   readonly milestoneName: string | null;
   readonly attachments: readonly AttachmentRow[];
@@ -150,16 +165,41 @@ export function selectDetail(context: DetailContext): DetailView {
   const { issue } = context;
   const state = context.states.find((entry) => entry.id === issue.stateId) ?? null;
   const tone = toneForStateType(state?.type);
+  const glyphs = context.glyphs ?? glyphsForStates(context.states);
+  const glyph =
+    (state === null ? undefined : glyphs.get(state.id)) ??
+    glyphSpec({
+      type: state?.type ?? "",
+      color: state?.color ?? null,
+      startedIndex: null,
+      startedCount: null,
+    });
+  const completedStateColor =
+    [...context.states]
+      .sort((a, b) => a.position - b.position)
+      .find((entry) => entry.type === "completed")?.color ?? null;
   const assignee = issue.assigneeId === null ? null : context.members.get(issue.assigneeId);
   const creator = issue.creatorId === null ? null : context.members.get(issue.creatorId);
   const estimationType = context.team?.estimationType ?? "notUsed";
 
   const properties: PropertyView[] = [];
-  const push = (key: string, label: string, value: string | null, propertyTone?: Tone) => {
+  const push = (
+    key: string,
+    label: string,
+    value: string | null,
+    propertyTone?: Tone,
+    projectGlyph?: ProjectGlyphSpec,
+  ) => {
     // A property with no value does not render. A detail pane full of
     // "Assignee: —" rows is a pane that has to be read past rather than read.
     if (value === null || value === "") return;
-    properties.push(propertyTone === undefined ? { key, label, value } : { key, label, value, tone: propertyTone });
+    properties.push({
+      key,
+      label,
+      value,
+      ...(propertyTone === undefined ? {} : { tone: propertyTone }),
+      ...(projectGlyph === undefined ? {} : { projectGlyph }),
+    });
   };
 
   push("assignee", "Assignee", assignee?.displayName ?? null);
@@ -169,7 +209,7 @@ export function selectDetail(context: DetailContext): DetailView {
     "Estimate",
     estimationType === "notUsed" ? null : formatEstimate(issue.estimate, estimationType),
   );
-  push("project", "Project", context.projectName);
+  push("project", "Project", context.projectName, undefined, context.projectGlyph ?? undefined);
   push("milestone", "Milestone", context.milestoneName);
   push("cycle", "Cycle", context.cycleName);
   push(
@@ -197,6 +237,7 @@ export function selectDetail(context: DetailContext): DetailView {
     dueDateLabel: issue.dueDate === null ? null : formatTimelessDate(issue.dueDate),
     projectId: issue.projectId,
     projectName: context.projectName,
+    projectGlyph: context.projectGlyph,
     cycleId: issue.cycleId,
     cycleName: context.cycleName,
   };
@@ -330,6 +371,14 @@ export function selectDetail(context: DetailContext): DetailView {
       identifier: relation.identifier ?? relation.counterpartId,
       title: relation.title ?? "Unknown issue",
       tone: toneForStateType(relation.stateType),
+      glyph:
+        (relation.stateId === null ? undefined : glyphs.get(relation.stateId)) ??
+        glyphSpec({
+          type: relation.stateType ?? "",
+          color: null,
+          startedIndex: null,
+          startedCount: null,
+        }),
       done: relation.stateType === "completed" || relation.stateType === "canceled",
       removable:
         relation.counterpartTeamId !== null &&
@@ -367,6 +416,9 @@ export function selectDetail(context: DetailContext): DetailView {
     stateId: issue.stateId,
     stateName: state?.name ?? "Unknown state",
     tone,
+    stateColor: state?.color ?? null,
+    glyph,
+    completedStateColor,
     struckThrough: tone === "canceled",
     fields,
     stateOptions: [...context.states]
@@ -380,6 +432,14 @@ export function selectDetail(context: DetailContext): DetailView {
         name: entry.name,
         type: entry.type,
         tone: toneForStateType(entry.type),
+        glyph:
+          glyphs.get(entry.id) ??
+          glyphSpec({
+            type: entry.type,
+            color: entry.color,
+            startedIndex: null,
+            startedCount: null,
+          }),
       })),
     properties,
     labels: issue.labelIds
@@ -391,6 +451,14 @@ export function selectDetail(context: DetailContext): DetailView {
       identifier: child.identifier,
       title: child.title,
       tone: toneForStateType(child.type),
+      glyph:
+        (child.stateId === null ? undefined : glyphs.get(child.stateId)) ??
+        glyphSpec({
+          type: child.type,
+          color: null,
+          startedIndex: null,
+          startedCount: null,
+        }),
       done: child.type === "completed" || child.type === "canceled",
     })),
     parent: context.parent,

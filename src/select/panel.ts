@@ -19,6 +19,7 @@ import type {
   SecondLine,
 } from "../contract.js";
 import type { IssueRow, MemberRow, TeamRow, WorkflowStateRow } from "../store/rows.js";
+import { glyphSpec, type GlyphSpec, type ProjectGlyphSpec } from "./glyph.js";
 import { priorityMark, toneForStateType, type Tone } from "./tone.js";
 
 /* Re-exported so a reader of this file — where the reasoning lives — does not
@@ -64,6 +65,7 @@ export interface SecondLineFacts {
   readonly today: string;
   readonly blockedBy: readonly string[];
   readonly subIssues: { readonly done: number; readonly total: number } | null;
+  readonly completedColor?: string | null;
   readonly cycleName: string | null;
   /** Only when the current filter spans cycles. Inside a single-cycle view the
    *  cycle name is the same on every row, which makes it decoration. */
@@ -118,6 +120,11 @@ export function selectSecondLine(facts: SecondLineFacts): SecondLine | null {
       kind: "sub-issues",
       text: `${facts.subIssues.done} of ${facts.subIssues.total} done`,
       tone: "unknown",
+      progress: {
+        done: facts.subIssues.done,
+        total: facts.subIssues.total,
+        color: facts.completedColor ?? null,
+      },
     };
   }
 
@@ -162,6 +169,7 @@ const PR_ATTENTION_TONE: Record<string, Tone> = {
 
 export interface RowContext {
   readonly states: ReadonlyMap<string, WorkflowStateRow>;
+  readonly glyphs: ReadonlyMap<string, GlyphSpec>;
   readonly members: ReadonlyMap<string, MemberRow>;
   readonly priorityLabels: ReadonlyMap<number, string>;
   readonly now: number;
@@ -177,6 +185,14 @@ export function selectRow(
 ): IssueRowView {
   const state = issue.stateId === null ? undefined : context.states.get(issue.stateId);
   const tone = toneForStateType(state?.type);
+  const glyph =
+    (state === undefined ? undefined : context.glyphs.get(state.id)) ??
+    glyphSpec({
+      type: state?.type ?? "",
+      color: state?.color ?? null,
+      startedIndex: null,
+      startedCount: null,
+    });
   const member = issue.assigneeId === null ? undefined : context.members.get(issue.assigneeId);
   const mark = priorityMark(issue.priority);
   // Always the workspace's own string, in the workspace's own language. The
@@ -210,6 +226,7 @@ export function selectRow(
     url: issue.url,
     stateName: state?.name ?? "Unknown state",
     tone,
+    glyph,
     lead: context.lead,
     bbFact,
     assignee,
@@ -275,6 +292,8 @@ export interface GroupingContext {
   readonly states: ReadonlyMap<string, WorkflowStateRow>;
   readonly members: ReadonlyMap<string, MemberRow>;
   readonly projectNames: ReadonlyMap<string, string>;
+  readonly projectGlyphs: ReadonlyMap<string, ProjectGlyphSpec>;
+  readonly glyphs: ReadonlyMap<string, GlyphSpec>;
   readonly cycleNames: ReadonlyMap<string, string>;
 }
 
@@ -284,12 +303,27 @@ export function groupRows(
   context: GroupingContext,
 ): IssueGroup[] {
   if (context.grouping === "none") {
-    return [{ key: "all", label: "", count: views.length, tone: "unknown", rows: [...views] }];
+    return [{
+      key: "all",
+      label: "",
+      count: views.length,
+      tone: "unknown",
+      glyph: null,
+      projectGlyph: null,
+      rows: [...views],
+    }];
   }
 
   const buckets = new Map<
     string,
-    { label: string; tone: Tone; order: number; rows: IssueRowView[] }
+    {
+      label: string;
+      tone: Tone;
+      order: number;
+      glyph: GlyphSpec | null;
+      projectGlyph: ProjectGlyphSpec | null;
+      rows: IssueRowView[];
+    }
   >();
 
   issues.forEach((issue, index) => {
@@ -315,6 +349,8 @@ export function groupRows(
       label: bucket.label,
       count: bucket.rows.length,
       tone: bucket.tone,
+      glyph: bucket.glyph,
+      projectGlyph: bucket.projectGlyph,
       rows: bucket.rows,
     }));
 }
@@ -341,7 +377,14 @@ const TYPE_ORDER: Record<string, number> = {
 function bucketFor(
   issue: IssueRow,
   context: GroupingContext,
-): { key: string; label: string; tone: Tone; order: number } {
+): {
+  key: string;
+  label: string;
+  tone: Tone;
+  order: number;
+  glyph: GlyphSpec | null;
+  projectGlyph: ProjectGlyphSpec | null;
+} {
   switch (context.grouping) {
     case "state": {
       const state = issue.stateId === null ? undefined : context.states.get(issue.stateId);
@@ -355,33 +398,60 @@ function bucketFor(
         label: state?.name ?? "No state",
         tone: toneForStateType(state?.type),
         order: (TYPE_ORDER[type] ?? 9) * 1000 + (state?.position ?? 0),
+        glyph: state === undefined ? null : (context.glyphs.get(state.id) ?? null),
+        projectGlyph: null,
       };
     }
     case "project": {
       if (issue.projectId === null) {
-        return { key: "no-project", label: "No project", tone: "unknown", order: 1_000_000 };
+        return {
+          key: "no-project",
+          label: "No project",
+          tone: "unknown",
+          order: 1_000_000,
+          glyph: null,
+          projectGlyph: null,
+        };
       }
       return {
         key: issue.projectId,
         label: context.projectNames.get(issue.projectId) ?? "Unknown project",
         tone: "unknown",
         order: 0,
+        glyph: null,
+        projectGlyph: context.projectGlyphs.get(issue.projectId) ?? null,
       };
     }
     case "cycle": {
       if (issue.cycleId === null) {
-        return { key: "no-cycle", label: "No cycle", tone: "unknown", order: 1_000_000 };
+        return {
+          key: "no-cycle",
+          label: "No cycle",
+          tone: "unknown",
+          order: 1_000_000,
+          glyph: null,
+          projectGlyph: null,
+        };
       }
       return {
         key: issue.cycleId,
         label: context.cycleNames.get(issue.cycleId) ?? "Unknown cycle",
         tone: "unknown",
         order: 0,
+        glyph: null,
+        projectGlyph: null,
       };
     }
     case "assignee": {
       if (issue.assigneeId === null) {
-        return { key: "unassigned", label: "Unassigned", tone: "unknown", order: 1_000_000 };
+        return {
+          key: "unassigned",
+          label: "Unassigned",
+          tone: "unknown",
+          order: 1_000_000,
+          glyph: null,
+          projectGlyph: null,
+        };
       }
       const member = context.members.get(issue.assigneeId);
       return {
@@ -390,10 +460,19 @@ function bucketFor(
         tone: "unknown",
         // The viewer's own work first. It is the group they came to look at.
         order: member?.isMe === true ? -1 : 0,
+        glyph: null,
+        projectGlyph: null,
       };
     }
     case "none":
-      return { key: "all", label: "", tone: "unknown", order: 0 };
+      return {
+        key: "all",
+        label: "",
+        tone: "unknown",
+        order: 0,
+        glyph: null,
+        projectGlyph: null,
+      };
   }
 }
 

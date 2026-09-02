@@ -64,6 +64,7 @@ import type { IssueRow } from "./src/store/rows.js";
 import { estimateLabel, estimateScale, selectDetail } from "./src/select/detail.js";
 import { initialsOf } from "./src/select/panel.js";
 import { toneForStateType } from "./src/select/tone.js";
+import { glyphSpec, glyphsForStates, projectGlyphSpec } from "./src/select/glyph.js";
 import { issueDetailText } from "./src/tools-format.js";
 import {
   mentionCandidates,
@@ -1391,6 +1392,17 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         ? panelWritableTeamIds()
         : new Set<string>();
       const writable = writableTeamIds.has(issue.teamId);
+      const glyphTeamIds = [
+        ...new Set([
+          issue.teamId,
+          ...relations
+            .map((relation) => relation.counterpartTeamId)
+            .filter((teamId): teamId is string => teamId !== null),
+        ]),
+      ];
+      const detailGlyphs = glyphsForStates(
+        glyphTeamIds.flatMap((teamId) => store.workflowStates(teamId)),
+      );
       const historyIds = (kind: string): string[] =>
         history
           .filter((event) => event.kind === kind)
@@ -1413,6 +1425,19 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       const priorityLabels = new Map(
         store.priorityValues([issue.teamId]).map((value) => [value.priority, value.label]),
       );
+      const currentProject = issue.projectId === null ? null : store.project(issue.projectId);
+      const projectStatus =
+        currentProject?.statusId === null || currentProject?.statusId === undefined
+          ? null
+          : (store.projectStatuses([issue.teamId]).find((status) => status.id === currentProject.statusId) ?? null);
+      const projectGlyph =
+        currentProject === null
+          ? null
+          : projectGlyphSpec({
+              type: projectStatus?.type ?? "",
+              color: projectStatus?.color ?? null,
+              progress: currentProject.progress,
+            });
       const projects = new Map(
         historyIds("project")
           .map((id) => store.project(id))
@@ -1461,6 +1486,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           writableTeamIds,
           team,
           states,
+          glyphs: detailGlyphs,
           members,
           labels,
           priorityLabels,
@@ -1470,12 +1496,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             id: child.id,
             identifier: child.identifier,
             title: child.title,
+            stateId: child.stateId,
             type:
               child.stateId === null
                 ? ""
                 : (states.find((entry) => entry.id === child.stateId)?.type ?? ""),
           })),
-          projectName: issue.projectId === null ? null : (store.project(issue.projectId)?.name ?? null),
+          projectName: currentProject?.name ?? null,
+          projectGlyph,
           cycleName:
             issue.cycleId === null
               ? null
@@ -3183,6 +3211,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           if (issue !== null) {
             const states = store.workflowStates(issue.teamId);
             const state = states.find((entry) => entry.id === issue.stateId) ?? null;
+            const glyphs = glyphsForStates(states);
             return {
               binding: {
                 issueId: issue.id,
@@ -3190,6 +3219,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
                 title: issue.title,
                 stateName: state?.name ?? "Unknown state",
                 tone: toneForStateType(state?.type),
+                glyph:
+                  (state === null ? undefined : glyphs.get(state.id)) ??
+                  glyphSpec({
+                    type: state?.type ?? "",
+                    color: state?.color ?? null,
+                    startedIndex: null,
+                    startedCount: null,
+                  }),
                 url: issue.url,
                 origin: link.origin,
                 stateOptions: [...states]
@@ -3199,6 +3236,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
                     name: entry.name,
                     type: entry.type,
                     tone: toneForStateType(entry.type),
+                    glyph:
+                      glyphs.get(entry.id) ??
+                      glyphSpec({
+                        type: entry.type,
+                        color: entry.color,
+                        startedIndex: null,
+                        startedCount: null,
+                      }),
                   })),
               },
               suggestion: null,
@@ -3310,15 +3355,25 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
 
         const team = store.team(issue.teamId);
         const estimationType = team?.estimationType ?? "notUsed";
+        const states = [...store.workflowStates(issue.teamId)].sort(
+          (a, b) => a.position - b.position,
+        );
+        const glyphs = glyphsForStates(states);
 
         return {
-          states: [...store.workflowStates(issue.teamId)]
-            .sort((a, b) => a.position - b.position)
-            .map((entry) => ({
+          states: states.map((entry) => ({
               id: entry.id,
               name: entry.name,
               type: entry.type,
               tone: toneForStateType(entry.type),
+              glyph:
+                glyphs.get(entry.id) ??
+                glyphSpec({
+                  type: entry.type,
+                  color: entry.color,
+                  startedIndex: null,
+                  startedCount: null,
+                }),
             })),
 
           /*

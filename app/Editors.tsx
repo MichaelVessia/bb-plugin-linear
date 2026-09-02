@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { DetailView } from "../src/contract.js";
 import { useAsync, useLinearRpc } from "./rpc.js";
+import { ProjectGlyph } from "./ProjectGlyph.js";
 
 /**
  * The editable half of the detail pane.
@@ -357,7 +358,11 @@ export function PropertyEditors({
       <Row label="Project">
         <DropdownMenu onOpenChange={(open) => { if (open) options.want(); }}>
           <Trigger what="project" busy={busy} empty={fields.projectId === null}>
-            <Icon name="Folder" className="size-3.5 shrink-0 opacity-60" aria-hidden />
+            {fields.projectGlyph === null ? (
+              <Icon name="Folder" className="size-3.5 shrink-0 opacity-60" aria-hidden />
+            ) : (
+              <ProjectGlyph glyph={fields.projectGlyph} />
+            )}
             <span className="truncate">{fields.projectName ?? "No project"}</span>
           </Trigger>
           <DropdownMenuContent align="start" className="w-56">

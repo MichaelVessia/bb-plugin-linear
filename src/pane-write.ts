@@ -1,5 +1,6 @@
 import { toneForStateType, type Tone } from "./select/tone.js";
 import type { Store } from "./store/store.js";
+import { glyphSpec, glyphsForStates, type GlyphSpec } from "./select/glyph.js";
 
 export type PaneRelationType = "blocks" | "blockedBy" | "related" | "duplicateOf";
 
@@ -28,6 +29,7 @@ export interface PickerIssue {
   readonly identifier: string;
   readonly title: string;
   readonly tone: Tone;
+  readonly glyph: GlyphSpec;
 }
 
 /** A bounded mirror-only issue picker. The caller establishes team scope. */
@@ -36,6 +38,7 @@ export function searchIssuesForPicker(
   teamId: string,
   query: string,
 ): PickerIssue[] {
+  const glyphs = glyphsForStates(store.workflowStates(teamId));
   return store
     .queryIssues({
       teamIds: [teamId],
@@ -44,14 +47,23 @@ export function searchIssuesForPicker(
       sort: "updated",
       limit: 20,
     })
-    .map((issue) => ({
-      id: issue.id,
-      identifier: issue.identifier,
-      title: issue.title,
-      tone: toneForStateType(
-        issue.stateId === null ? null : store.workflowState(issue.stateId)?.type,
-      ),
-    }));
+    .map((issue) => {
+      const state = issue.stateId === null ? null : store.workflowState(issue.stateId);
+      return {
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        tone: toneForStateType(state?.type),
+        glyph:
+          (state === null ? undefined : glyphs.get(state.id)) ??
+          glyphSpec({
+            type: state?.type ?? "",
+            color: state?.color ?? null,
+            startedIndex: null,
+            startedCount: null,
+          }),
+      };
+    });
 }
 
 export interface MentionCandidate {
