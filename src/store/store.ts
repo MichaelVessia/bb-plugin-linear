@@ -331,7 +331,13 @@ export interface Store {
   bindings(): BindingRow[];
   bindingsForProject(projectId: string): BindingRow[];
   boundTeamIds(): string[];
-  setBinding(projectId: string, teamId: string, role: BindingRole, at: number): void;
+  setBinding(
+    projectId: string,
+    teamId: string,
+    role: BindingRole,
+    at: number,
+    origin?: BindingRow["origin"],
+  ): void;
   removeBinding(projectId: string, teamId: string): void;
   removeProjectBindings(projectId: string): void;
 
@@ -1718,7 +1724,7 @@ export function createStore(db: Database): Store {
     bindings() {
       return db
         .prepare(
-          `SELECT project_id AS projectId, team_id AS teamId, role, bound_at AS boundAt
+          `SELECT project_id AS projectId, team_id AS teamId, role, bound_at AS boundAt, origin
              FROM binding ORDER BY project_id, role, team_id`,
         )
         .all() as BindingRow[];
@@ -1727,7 +1733,7 @@ export function createStore(db: Database): Store {
     bindingsForProject(projectId) {
       return db
         .prepare(
-          `SELECT project_id AS projectId, team_id AS teamId, role, bound_at AS boundAt
+          `SELECT project_id AS projectId, team_id AS teamId, role, bound_at AS boundAt, origin
              FROM binding WHERE project_id = ?
              ORDER BY CASE role WHEN 'primary' THEN 0 WHEN 'write' THEN 1 ELSE 2 END, team_id`,
         )
@@ -1751,7 +1757,7 @@ export function createStore(db: Database): Store {
       ).map((row) => row.teamId);
     },
 
-    setBinding(projectId, teamId, role, at) {
+    setBinding(projectId, teamId, role, at, origin = "manual") {
       db.transaction(() => {
         // Promoting a team to primary demotes the incumbent rather than
         // colliding with the partial unique index. Doing it here rather than
@@ -1762,10 +1768,11 @@ export function createStore(db: Database): Store {
           ).run(projectId, teamId);
         }
         db.prepare(
-          `INSERT INTO binding (project_id, team_id, role, bound_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(project_id, team_id) DO UPDATE SET role = excluded.role`,
-        ).run(projectId, teamId, role, at);
+          `INSERT INTO binding (project_id, team_id, role, bound_at, origin)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(project_id, team_id) DO UPDATE SET
+             role = excluded.role, origin = excluded.origin`,
+        ).run(projectId, teamId, role, at, origin);
       })();
     },
 

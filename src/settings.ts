@@ -126,6 +126,13 @@ export const SETTING_DESCRIPTORS = {
     description:
       "Title puts the issue identifier at the front of the thread title and lets bb name the branch — Linear's autolink matches on the identifier, so the link survives. Exact checks out the branch name Linear generated, but only when that branch already exists and the working tree is clean; otherwise it falls back to title and says so.",
   },
+  autoBind: {
+    type: "boolean",
+    label: "Bind projects to teams automatically",
+    default: true,
+    description:
+      "When an issue key in a branch or thread title names exactly one team you can access, bind that bb project to the team. Every automatic bind is announced with an undo. Turn this off to keep the same offers visible without ever binding automatically.",
+  },
   spawnMovesStatus: {
     type: "boolean",
     label: "Move the issue when a thread starts",

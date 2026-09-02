@@ -141,7 +141,7 @@ export function toolsFor(writes: AgentWrites): string[] {
 }
 
 export const UNBOUND_INSTRUCTION =
-  "This project isn't bound to a Linear team, so Linear tools are unavailable here. Bind it from the Linear plugin's settings.";
+  "This bb project isn't bound to a Linear team, so Linear tools are unavailable here. Use the Linear panel's Bind button or run `bb linear bind TEAM-KEY`. `linear_thread_bind` remains available for linking a thread after the project has a team.";
 
 export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
   const context = (

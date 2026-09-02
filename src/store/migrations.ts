@@ -678,4 +678,8 @@ export const MIGRATIONS: string[] = [
 
   `CREATE INDEX IF NOT EXISTS inbox_by_dismissed
      ON inbox (dismissed_at) WHERE dismissed_at IS NOT NULL`,
+
+  /* ── M25: inspectable project-binding provenance ────────────────────── */
+
+  `ALTER TABLE binding ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'`,
 ];

@@ -225,6 +225,20 @@ describe("bb linear", () => {
     expect(seen).toBe("proj_explicit");
   });
 
+  it("unbinds the named team from the project it was run from", async () => {
+    let seen: { teamKey: string; projectId: string | undefined } | null = null;
+    const result = await createCliRunner(
+      environment({
+        unbind: async (args) => {
+          seen = args;
+          return { ok: true, message: "Unbound ENG." };
+        },
+      }),
+    )(["unbind", "ENG"], { ...CTX, projectId: "proj_from_cwd" });
+    expect(result.exitCode).toBe(0);
+    expect(seen).toEqual({ teamKey: "ENG", projectId: "proj_from_cwd" });
+  });
+
   it("lists issues as columns, so --json is data rather than rendered text", async () => {
     const result = await createCliRunner(environment())(["issues", "--json"], CTX);
     const parsed = JSON.parse(result.stdout ?? "{}") as { issues: string[][] };

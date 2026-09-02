@@ -100,6 +100,40 @@ describe("rung 2 — the branch", () => {
   });
 });
 
+describe("rung 2.5 — an identifier retained in a hand-edited branch", () => {
+  it("binds when the branch no longer exactly matches Linear's stored branch name", () => {
+    const outcome = resolveBinding(deps(), input({ branchName: "work/lin-2-custom-name" }));
+    expect(outcome).toEqual({
+      kind: "bound",
+      issueId: "i2",
+      teamId: "team_lin",
+      origin: "branch",
+      isNew: true,
+    });
+  });
+
+  it("respects read scope", () => {
+    const outcome = resolveBinding(deps(), input({ branchName: "work/ops-9-custom-name" }));
+    expect(outcome.kind).toBe("none");
+  });
+
+  it("loses to Linear's exact stored branch-name match", () => {
+    const outcome = resolveBinding(
+      deps({ issueByIdentifier: () => M4 }),
+      input({ branchName: "feature/lin-2-m2-sqlite-mirror" }),
+    );
+    expect(outcome).toMatchObject({ kind: "bound", issueId: "i2", origin: "branch" });
+  });
+
+  it("does not rebind an identifier the thread declined", () => {
+    const outcome = resolveBinding(
+      deps({ issueByIdentifier: () => null }),
+      input({ branchName: "work/lin-2-custom-name" }),
+    );
+    expect(outcome.kind).toBe("none");
+  });
+});
+
 describe("rung 3 — a key in the text", () => {
   it("binds the first resolvable identifier", () => {
     const outcome = resolveBinding(

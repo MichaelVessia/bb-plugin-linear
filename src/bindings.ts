@@ -169,17 +169,14 @@ export function describeBinding(input: {
 }
 
 /**
- * What to offer when a project has no binding yet.
+ * Project binding inference is evidence-gated, never guess-gated.
  *
- * With exactly one team there is no picker: one sentence and one button.
- * Auto-binding is still rejected — it trains both the code and the user into
- * an assumption that breaks the day a second team appears, and it makes the
- * refusal above meaningless because nobody ever chose anything.
+ * A branch or title carrying an issue identifier says which team key a human
+ * already chose and may auto-bind when it resolves to exactly one accessible
+ * team. Fuzzy team/repository name similarity only ranks the explicit offers
+ * below; it never binds. Every automatic bind is announced and undoable, and
+ * an explicit undo leaves a durable decline marker. See BRIEF D6.
  */
-export type BindOffer =
-  | { readonly kind: "none-visible" }
-  | { readonly kind: "single"; readonly team: TeamRow; readonly sentence: string }
-  | { readonly kind: "pick"; readonly teams: readonly TeamRow[] };
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /* The settings section's view                                                */
@@ -189,6 +186,9 @@ export interface ProjectSummary {
   readonly id: string;
   readonly name: string;
   readonly kind: "personal" | "standard";
+  /** Repository name from the configured remote, falling back to the default
+   *  source directory basename. Used only to rank offers. */
+  readonly repoName?: string | null;
 }
 
 export function toTeamView(
@@ -236,6 +236,11 @@ export function buildBindingsView(input: {
   readonly bindings: readonly BindingRow[];
   readonly teams: readonly TeamRow[];
   readonly workspaceName: string | null;
+  /** Ranked offers by project id, produced by `autolink.ts`. */
+  readonly offers?: ReadonlyMap<
+    string,
+    readonly { readonly teamId: string; readonly reason: string }[]
+  >;
   /** Every connected workspace. One entry means the names are dropped from
    *  the rows: naming the only workspace on every row is noise. */
   readonly workspaces?: readonly { readonly id: string; readonly name: string }[];
@@ -255,6 +260,7 @@ export function buildBindingsView(input: {
         .map((row) => teamsById.get(row.teamId))
         .filter((team): team is TeamRow => team !== undefined);
 
+    const primaryRow = rows.find((row) => row.role === "primary") ?? null;
     const primary = pick("primary")[0] ?? null;
     const write = pick("write");
     const read = pick("read");
@@ -264,9 +270,19 @@ export function buildBindingsView(input: {
       projectName: project.kind === "personal" ? "Personal threads" : project.name,
       isPersonal: project.kind === "personal",
       primary: primary === null ? null : toTeamView(primary, true, workspaceNames),
+      origin: primary === null ? null : (primaryRow?.origin ?? null),
       write: write.map((team) => toTeamView(team, true, workspaceNames)),
       read: read.map((team) => toTeamView(team, true, workspaceNames)),
       sentence: describeBinding({ primary, write, read }),
+      offers:
+        primary !== null
+          ? []
+          : (input.offers?.get(project.id) ?? []).flatMap((offer) => {
+              const team = teamsById.get(offer.teamId);
+              return team === undefined
+                ? []
+                : [{ team: toTeamView(team, false, workspaceNames), reason: offer.reason }];
+            }),
     };
   });
 
@@ -287,17 +303,4 @@ export function buildBindingsView(input: {
     // to know.
     teamsVisible: input.teams.length,
   };
-}
-
-export function bindOffer(teams: readonly TeamRow[], workspaceName: string): BindOffer {
-  if (teams.length === 0) return { kind: "none-visible" };
-  if (teams.length === 1) {
-    const team = teams[0]!;
-    return {
-      kind: "single",
-      team,
-      sentence: `${workspaceName} has one team, ${team.name} (${team.key}). Bind this project to it?`,
-    };
-  }
-  return { kind: "pick", teams };
 }

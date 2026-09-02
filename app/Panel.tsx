@@ -386,10 +386,7 @@ function PanelBody({
           <p className="text-sm text-foreground">
             No bb project is bound to a Linear team yet, so there is nothing to show here.
           </p>
-          <p className="text-sm text-muted-foreground">
-            Bind one in this plugin&apos;s settings — the Linear button in bb&apos;s sidebar footer
-            opens that page.
-          </p>
+          <BindingOffers />
         </Body>
       );
 
@@ -437,6 +434,91 @@ function PanelBody({
         <GroupedRows {...{ state, selected, onOpen, listRef, collapsed, searching, actions }} />
       );
   }
+}
+
+function BindingOffers() {
+  const rpc = useLinearRpc();
+  const bindings = useAsync(
+    useCallback(async () => rpc.call("bindings", null), [rpc]),
+    [],
+  );
+  const [binding, setBinding] = useState<string | null>(null);
+  useRealtime("linear:structure", bindings.reload);
+
+  if (bindings.status === "loading") {
+    return <p className="text-sm text-muted-foreground">Finding teams you can bind…</p>;
+  }
+  if (bindings.status === "failed") {
+    return <Notice tone="error">{bindings.message}</Notice>;
+  }
+
+  const projects = bindings.value.unbound.filter((project) => project.offers.length > 0);
+
+  return (
+    <div className="space-y-3">
+      {projects.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No binding offer is available yet. Refresh the workspace if its teams have not appeared.
+        </p>
+      ) : (
+        projects.map((project) => (
+          <section key={project.projectId} className="space-y-2">
+            <h3 className="text-xs font-medium text-muted-foreground">{project.projectName}</h3>
+            {project.offers.map((offer) => {
+              const pending = binding === `${project.projectId}:${offer.team.id}`;
+              return (
+                <div
+                  key={offer.team.id}
+                  className="flex items-center gap-3 rounded-md border border-border px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {offer.team.name} ({offer.team.key})
+                    </p>
+                    <p className="text-xs text-muted-foreground">{offer.reason}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 text-xs"
+                    disabled={binding !== null}
+                    onClick={() => {
+                      const key = `${project.projectId}:${offer.team.id}`;
+                      setBinding(key);
+                      void rpc
+                        .call("bind", {
+                          projectId: project.projectId,
+                          teamId: offer.team.id,
+                          role: "primary",
+                        })
+                        .then((result) => {
+                          if (result.ok) {
+                            toast.success(`Bound ${project.projectName} to ${offer.team.key}.`);
+                            bindings.reload();
+                          } else {
+                            toast.error(result.message ?? "The project was not bound.");
+                          }
+                        })
+                        .catch((error: unknown) => {
+                          toast.error(error instanceof Error ? error.message : "The project was not bound.");
+                        })
+                        .finally(() => setBinding(null));
+                    }}
+                  >
+                    {pending ? "Binding…" : "Bind"}
+                  </Button>
+                </div>
+              );
+            })}
+          </section>
+        ))
+      )}
+      <p className="text-xs text-muted-foreground">
+        or: <code className="rounded bg-muted px-1 py-0.5 font-mono">bb linear bind TEAM-KEY</code>
+      </p>
+    </div>
+  );
 }
 
 /**

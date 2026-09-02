@@ -111,4 +111,8 @@ export const KV = {
   budget: "budget",
   /** Account-wide UI preference. Sort only — see the persistence split. */
   sortPreference: "ui:sort",
+  /** A project whose automatic primary binding was explicitly undone. The
+   *  marker survives reloads so identifier evidence cannot recreate the same
+   *  scope behind the user's back; a later manual bind clears it. */
+  autolinkDeclined: (projectId: string) => `autolink:declined:${projectId}`,
 } as const;

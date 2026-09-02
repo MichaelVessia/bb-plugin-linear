@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  bindOffer,
   buildBindingsView,
   canRead,
   canWrite,
@@ -18,10 +17,10 @@ const DES: TeamRow = { ...makeTeam("t_des", "DES", { name: "Design" }), fetchedA
 const PLT: TeamRow = { ...makeTeam("t_plt", "PLT", { name: "Platform" }), fetchedAt: NOW };
 
 const BINDINGS: BindingRow[] = [
-  { projectId: "p1", teamId: "t_eng", role: "primary", boundAt: NOW },
-  { projectId: "p1", teamId: "t_des", role: "write", boundAt: NOW },
-  { projectId: "p1", teamId: "t_plt", role: "read", boundAt: NOW },
-  { projectId: "p2", teamId: "t_des", role: "primary", boundAt: NOW },
+  { projectId: "p1", teamId: "t_eng", role: "primary", boundAt: NOW, origin: "auto" },
+  { projectId: "p1", teamId: "t_des", role: "write", boundAt: NOW, origin: "manual" },
+  { projectId: "p1", teamId: "t_plt", role: "read", boundAt: NOW, origin: "manual" },
+  { projectId: "p2", teamId: "t_des", role: "primary", boundAt: NOW, origin: "manual" },
 ];
 
 describe("scopeFor", () => {
@@ -133,28 +132,6 @@ describe("describeBinding", () => {
   });
 });
 
-describe("bindOffer", () => {
-  it("offers a sentence and a button when there is exactly one team", () => {
-    // No picker — and still no auto-binding: auto-binding trains both the code
-    // and the user into an assumption that breaks the day a second team
-    // appears, and it makes the refusal meaningless because nobody chose.
-    const offer = bindOffer([ENG], "Acme");
-    expect(offer.kind).toBe("single");
-    if (offer.kind !== "single") return;
-    expect(offer.sentence).toBe(
-      "Acme has one team, Engineering (ENG). Bind this project to it?",
-    );
-  });
-
-  it("offers a picker when there are several", () => {
-    expect(bindOffer([ENG, DES], "Acme").kind).toBe("pick");
-  });
-
-  it("says so when the key can see none", () => {
-    expect(bindOffer([], "Acme").kind).toBe("none-visible");
-  });
-});
-
 describe("buildBindingsView", () => {
   const projects = [
     { id: "p1", name: "bb/api", kind: "standard" as const },
@@ -186,6 +163,26 @@ describe("buildBindingsView", () => {
     });
     expect(view.bound.map((entry) => entry.projectId).sort()).toEqual(["p1", "p2"]);
     expect(view.unbound.map((entry) => entry.projectId)).toEqual(["p_personal"]);
+    expect(view.bound.find((entry) => entry.projectId === "p1")?.origin).toBe("auto");
+  });
+
+  it("exposes ranked offers on the unbound project", () => {
+    const view = buildBindingsView({
+      projects: [projects[2]!],
+      bindings: [],
+      teams: [ENG, DES],
+      workspaceName: "Acme",
+      offers: new Map([
+        [
+          "p_personal",
+          [
+            { teamId: "t_des", reason: "name resembles the repo" },
+            { teamId: "t_eng", reason: "available team" },
+          ],
+        ],
+      ]),
+    });
+    expect(view.unbound[0]?.offers.map((offer) => offer.team.key)).toEqual(["DES", "ENG"]);
   });
 
   it("counts visible teams without a denominator", () => {
@@ -204,7 +201,15 @@ describe("buildBindingsView", () => {
   it("survives a binding whose team is not in the local copy yet", () => {
     const view = buildBindingsView({
       projects: [projects[0]!],
-      bindings: [{ projectId: "p1", teamId: "t_unknown", role: "primary", boundAt: NOW }],
+      bindings: [
+        {
+          projectId: "p1",
+          teamId: "t_unknown",
+          role: "primary",
+          boundAt: NOW,
+          origin: "manual",
+        },
+      ],
       teams: [],
       workspaceName: null,
     });

@@ -61,8 +61,8 @@ create form with nine fields loses the race against a sticky note.
 
 Every bb thread resolves *which issue it is working on* through a
 deterministic ladder — an explicit link, the branch name Linear generated, an
-issue key in the conversation, and only then a fuzzy title match that
-**suggests instead of binding**. A thread whose title merely resembles an
+issue key in the branch or the conversation, and only then a fuzzy title match
+that **suggests instead of binding**. A thread whose title merely resembles an
 issue gets a question, not a bind:
 
 ![The header chip suggesting LIN-3 for a matching thread](./assets/readme/chip-suggested.png)
@@ -136,6 +136,13 @@ readable and writable. A bundled skill teaches the conventions.
   lift the issue into the team's started state; a merged PR can move it per
   the team's own Linear git automation. Off, because two writers fighting
   over one card is worse than either alone.
+- **Binds itself only on explicit evidence** — an issue key in a branch or
+  thread title that names exactly one visible team binds the project to it,
+  announced with an undo; anything fuzzier becomes an offer in the panel,
+  never a bind.
+- **Remote edits arrive hot** — a change made on linear.app promotes polling
+  to seconds while somebody is watching, and a webhook delivery or local
+  write wakes the poller instead of waiting out its sleep.
 - **Webhooks as an upgrade, not a dependency** — registered only after a
   signed self-test proves the URL reaches this bb; delivery is health-checked
   and demotion back to polling is a log line, not an outage.

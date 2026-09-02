@@ -7,7 +7,13 @@ import type { BindingRow } from "../src/store/rows.js";
 import { createTestStore, issue, member, NOW, state, team } from "./helpers/store.js";
 
 const BINDINGS: BindingRow[] = [
-  { projectId: "p1", teamId: "team_eng", role: "primary", boundAt: NOW },
+  {
+    projectId: "p1",
+    teamId: "team_eng",
+    role: "primary",
+    boundAt: NOW,
+    origin: "manual",
+  },
 ];
 
 function harness(bindings: readonly BindingRow[] = BINDINGS) {

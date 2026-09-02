@@ -150,12 +150,14 @@ export interface IssueRow {
 }
 
 export type BindingRole = "primary" | "write" | "read";
+export type BindingOrigin = "manual" | "auto";
 
 export interface BindingRow {
   readonly projectId: string;
   readonly teamId: string;
   readonly role: BindingRole;
   readonly boundAt: number;
+  readonly origin: BindingOrigin;
 }
 
 export function isBindingRole(value: string): value is BindingRole {

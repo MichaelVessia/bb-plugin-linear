@@ -586,6 +586,7 @@ export const facetsSchema = z.object({
 export type Facets = z.infer<typeof facetsSchema>;
 
 export const bindingRoleSchema = z.enum(["primary", "write", "read"]);
+export const bindingOriginSchema = z.enum(["manual", "auto"]);
 
 export const projectBindingViewSchema = z.object({
   projectId: z.string(),
@@ -595,11 +596,17 @@ export const projectBindingViewSchema = z.object({
    *  project, whose every thread would be unbound. */
   isPersonal: z.boolean(),
   primary: teamViewSchema.nullable(),
+  /** Why the primary binding exists. Auto is inspectable rather than a
+   *  silent side effect, and manual remains the default for upgraded rows. */
+  origin: bindingOriginSchema.nullable(),
   write: z.array(teamViewSchema),
   read: z.array(teamViewSchema),
   /** One sentence rather than three chips: the difference between a write
    *  team and a read-only one is a rule, and a rule reads better as prose. */
   sentence: z.string(),
+  /** Ranked, explicit choices for an unbound project. Similarity can order
+   *  these rows but can never create a binding. */
+  offers: z.array(z.object({ team: teamViewSchema, reason: z.string() })),
 });
 export type ProjectBindingView = z.infer<typeof projectBindingViewSchema>;
 

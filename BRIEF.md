@@ -152,18 +152,26 @@ complexity-weighted — the poller uses coalesced delta queries
 (`updatedAt > cursor` filters) and the budgeter is one module every caller
 goes through.
 
-**D6 — The binding ladder, fuzzy suggests only.** A thread's issue resolves:
-explicit pin (thread started from an issue, or attached by hand) → branch
-name matching Linear's own `gitBranchName` convention → issue key or URL in
-thread messages → fuzzy title match against the bound team's issues. The
-deterministic layers auto-bind with provenance shown ("bound via branch");
-fuzzy renders as a suggestion — "Looks like ABC-123 — bind?" — one click,
-never silent. Manual override always wins and sticks. Bindings persist in
-the plugin database keyed by thread id, re-evaluated on thread lifecycle
-events and branch changes. `contributeInstructions` serves the bound issue
-(key, title, state, one-line provenance) from an in-memory cache so every
-agent turn knows its task with zero tool calls. Beat: silent fuzzy auto-bind
-(a wrong binding plus write-back moves the wrong ticket).
+**D6 — Binding uses identifier evidence; fuzzy suggests only.** An unbound bb
+project may bind automatically only when a branch or thread title carries an
+issue identifier whose team key resolves to exactly one accessible Linear
+team. That is not a fuzzy guess: a human already chose the team key in another
+surface. Every automatic project binding is announced with an undo, and undo
+records a durable decline so it does not return. With no identifier evidence,
+team/repository name similarity ranks visible offers only and never binds.
+
+A thread's issue resolves: explicit pin (thread started from an issue, or
+attached by hand) → branch name matching Linear's own `Issue.branchName` → an
+issue identifier retained in a hand-edited branch → issue key or URL in thread
+messages → fuzzy title match against the bound team's issues. The deterministic
+layers auto-bind with provenance shown ("bound via branch"); fuzzy renders as a
+suggestion — "Looks like ABC-123 — bind?" — one click, never silent. Manual
+override always wins and sticks. Bindings persist in the plugin database keyed
+by thread id, re-evaluated on thread lifecycle events and branch changes.
+`contributeInstructions` serves the bound issue (key, title, state, one-line
+provenance) from an in-memory cache so every agent turn knows its task with zero
+tool calls. Beat: silent fuzzy auto-bind (a wrong binding plus write-back moves
+the wrong ticket).
 
 **D7 — Write-back ships OFF.** Git facts (branch pushed, PR opened, merged)
 and thread facts (bound + actively working) can move the issue — using the
@@ -329,3 +337,23 @@ checklist maintained in `docs/smoke.md` from M2 on.
 - `issue` and `threadIssue` RPC reads count as frontend liveness, with issue
   detail also counting as panel visibility. Beat: “only the nav panel counts,”
   which read an open thread as an absent user.
+
+## 2026-09-01 — v0.2.0 auto-link pass
+
+- Evidence-gated project auto-binding beat manual-only binding because an
+  unbound project is a dark project: every Linear tool is withheld, nothing
+  syncs, and the empty panel pointed at a settings surface that did not exist.
+  An issue key in a branch or thread title is not a guess; a human already
+  chose that team's key in another surface. The binding is announced, carries
+  `origin = auto`, and names `bb linear unbind TEAM-KEY` as its undo.
+- The old core argument still stands: fuzzy title or team/repository name
+  similarity never binds. It only orders visible offers, because a wrong
+  binding plus write-back moves the wrong ticket.
+- The thread ladder gained rung 2.5 after Linear's exact stored branch-name
+  match: a hand-edited branch retaining `ABC-123` may resolve that identifier
+  within the project's read scope. The exact `Issue.branchName` rung still
+  wins, and a declined thread suppresses both branch rungs.
+- Undoing an auto-created primary project binding records a durable
+  `autolink:declined:<projectId>` marker. Inference then stays off for that
+  project across reloads; a subsequent manual CLI, RPC, or panel bind clears
+  the marker and restores the user's explicit scope.

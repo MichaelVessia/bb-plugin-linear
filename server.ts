@@ -73,6 +73,17 @@ import type { IssueDetailNode, IssueNode } from "./src/linear/types.js";
 import { resolveBinding, type LadderDeps } from "./src/binding.js";
 import { crossTeamRefusal, scopeFor } from "./src/bindings.js";
 import {
+  inferProjectLink,
+  type IdentifierEvidence,
+} from "./src/autolink.js";
+import { identifierFromBranch, parseRemote } from "./src/git/remote.js";
+import { identifiersInText } from "./src/select/identifiers.js";
+import {
+  autolinkDeclinedSchema,
+  bindProject,
+  unbindProject,
+} from "./src/project-binding.js";
+import {
   classifyVerificationFailure,
   connectedState,
   describeConnection,
@@ -143,6 +154,7 @@ export type { LinearRpcContract } from "./src/contract.js";
  *  plugin's settings page, and a workspace lookup per visit is a request spent
  *  on something nobody asked for. **Check again** sends `recheck`. */
 const CONNECTION_CACHE_MS = 60_000;
+const AUTOLINK_COOLDOWN_MS = 60_000;
 
 const verifiedRecordSchema = z.object({
   v: z.literal(1),
@@ -895,6 +907,15 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         id: project.id,
         name: project.name,
         kind: project.kind,
+        repoName:
+          parseRemote(project.gitRemoteUrl)?.repo ??
+          project.sources
+            .find((source) => source.isDefault)
+            ?.path.split(/[\\/]/)
+            .filter(Boolean)
+            .at(-1) ??
+          project.sources[0]?.path.split(/[\\/]/).filter(Boolean).at(-1) ??
+          null,
       }));
     }
 
@@ -1055,7 +1076,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             ? "no bb project is bound to a Linear team"
             : `${bound.length} ${pluralize(bound.length, "team", "teams")} bound`,
         ...(bound.length === 0
-          ? { fix: "Bind one in this plugin's settings, or run: bb linear bind <TEAM-KEY> --project <id>" }
+          ? { fix: "Bind one from the Linear panel, or run: bb linear bind <TEAM-KEY> --project <id>" }
           : {}),
       });
 
@@ -2428,6 +2449,15 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       { issueId: string; identifier: string; title: string }
     >();
 
+    /** An unbound project can produce the same non-binding answer on every
+     *  active/idle event. Keep that answer quiet for one minute; a successful
+     *  bind removes the project from this path entirely. */
+    const autolinkCooldowns = new Map<string, number>();
+    const autolinkOffers = new Map<
+      string,
+      readonly { readonly teamId: string; readonly reason: string }[]
+    >();
+
     /** What `contributeInstructions` serves. That hook is synchronous and on
      *  the thread-start path, so the strings are prebuilt here and only ever
      *  *read* there. */
@@ -2442,6 +2472,111 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
      * re-offering, and re-offering is one click to decline again.
      */
     const declined = new Map<string, Set<string>>();
+
+    function evidenceForAutolink(
+      branchName: string | null,
+      texts: readonly string[],
+    ): IdentifierEvidence[] {
+      const evidence: IdentifierEvidence[] = [];
+      if (branchName !== null) {
+        const identifier = identifierFromBranch(branchName);
+        if (identifier !== null) {
+          evidence.push({
+            identifier: branchName,
+            teamKey: identifier.slice(0, identifier.lastIndexOf("-")),
+            source: "branch",
+          });
+        }
+      }
+      for (const text of texts) {
+        for (const identifier of identifiersInText(text).identifiers) {
+          evidence.push({
+            identifier,
+            teamKey: identifier.slice(0, identifier.lastIndexOf("-")),
+            source: "title",
+          });
+        }
+      }
+      return evidence;
+    }
+
+    async function projectAutolinkDecision(
+      project: ProjectSummary,
+      evidence: readonly IdentifierEvidence[],
+      autoBindEnabled: boolean,
+    ) {
+      const declinedProject =
+        (await kv.readOptional(
+          KV.autolinkDeclined(project.id),
+          autolinkDeclinedSchema,
+        )) !== undefined;
+      return inferProjectLink({
+        existingBindings: bindingSnapshot.filter((row) => row.projectId === project.id),
+        declined: declinedProject,
+        teams: store.teams(),
+        evidence,
+        repoName: project.repoName ?? null,
+        autoBindEnabled,
+      });
+    }
+
+    async function announceAutoBinding(
+      projectId: string,
+      team: NonNullable<ReturnType<Store["team"]>>,
+      reason: string,
+    ): Promise<void> {
+      const at = now();
+      const message = `Linked this project to team ${team.key} — ${reason}. Undo: bb linear unbind ${team.key}`;
+      const workspaceId =
+        store.workspaceForTeam(team.id)?.id ?? store.workspace()?.id ?? "autolink";
+      const key = `autolink:${projectId}:${team.id}:${String(at)}`;
+      store.putInbox([
+        {
+          key,
+          workspaceId,
+          kind: "other",
+          issueId: null,
+          teamId: team.id,
+          actorId: null,
+          title: message,
+          body: null,
+          url: null,
+          createdAt: at,
+          seenAt: null,
+          dismissedAt: null,
+          linearReadAt: null,
+        },
+      ]);
+
+      await claimAndSend(
+        {
+          claim: (claimKey, kind, claimedAt) =>
+            store.claimDelivery(claimKey, kind, claimedAt),
+          markSent: (claimKey, sentAt) => store.markDelivered(claimKey, sentAt),
+        },
+        { key, kind: "autolink", now: at },
+        async () => {
+          const values = await settings.get();
+          await deliverToPeer(
+            {
+              listPlugins: async () => {
+                const { plugins } = await bb.sdk.plugins.list();
+                return plugins.map((entry) => ({
+                  id: entry.id,
+                  enabled: entry.enabled,
+                  status: entry.status,
+                }));
+              },
+              callRpc: (args) => bb.sdk.plugins.callRpc(args as never),
+              log: (level, detail) => lifetime.log(level, detail),
+            },
+            values.pushPluginId,
+            { title: "Linear project linked", body: message, tag: key },
+          );
+        },
+      );
+      publish("linear:inbox");
+    }
 
     function ladderDeps(readTeamIds: ReadonlySet<string>, threadId: string): LadderDeps {
       const declinedHere = declined.get(threadId) ?? new Set<string>();
@@ -2505,14 +2640,6 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       if (thread === null) return;
 
       const projectId = thread.projectId ?? null;
-      const scope = projectId === null ? null : scopeFor(projectId, bindingSnapshot);
-      const readTeamIds = new Set(scope?.readTeamIds ?? []);
-      if (readTeamIds.size === 0) {
-        suggestions.delete(threadId);
-        rebuildInstruction(threadId);
-        return;
-      }
-
       let branchName: string | null = null;
       const environmentId = thread.environmentId ?? null;
       if (environmentId !== null) {
@@ -2525,6 +2652,62 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       }
 
       const title = thread.title ?? null;
+      let scope = projectId === null ? null : scopeFor(projectId, bindingSnapshot);
+      let readTeamIds = new Set(scope?.readTeamIds ?? []);
+      if (readTeamIds.size === 0) {
+        suggestions.delete(threadId);
+        rebuildInstruction(threadId);
+        if (projectId === null) return;
+
+        const cooldownUntil = autolinkCooldowns.get(projectId) ?? 0;
+        if (cooldownUntil > now()) return;
+        // Reserve before the first inference await. Thread lifecycle callbacks
+        // can interleave, and without this reservation two callbacks could
+        // both observe the project as unbound and announce the same bind.
+        autolinkCooldowns.set(projectId, now() + AUTOLINK_COOLDOWN_MS);
+
+        const project = (await projectSummaries()).find((entry) => entry.id === projectId);
+        if (project === undefined) return;
+        const values = await settings.get();
+        const decision = await projectAutolinkDecision(
+          project,
+          evidenceForAutolink(branchName, [title ?? "", ...extraTexts]),
+          values.autoBind,
+        );
+        if (decision.kind !== "bind") {
+          if (decision.kind === "offer") {
+            autolinkOffers.set(projectId, decision.teams);
+          } else {
+            autolinkOffers.delete(projectId);
+          }
+          return;
+        }
+
+        const team = store.team(decision.teamId);
+        if (team === null) return;
+        await bindProject(
+          { store, kv, now },
+          {
+            projectId,
+            teamId: team.id,
+            role: "primary",
+            origin: "auto",
+          },
+        );
+        refreshBindings();
+        autolinkCooldowns.delete(projectId);
+        autolinkOffers.delete(projectId);
+        await announceAutoBinding(projectId, team, decision.reason);
+        publishStructure();
+        detachBackfill("backfill", false);
+
+        // Continue the thread ladder in the same pass. If the issue is already
+        // mirrored, the branch/title evidence links it immediately; otherwise
+        // the bounded backfill makes it available to the next lifecycle beat.
+        scope = scopeFor(projectId, bindingSnapshot);
+        readTeamIds = new Set(scope.readTeamIds);
+      }
+
       const outcome = resolveBinding(ladderDeps(readTeamIds, threadId), {
         threadId,
         branchName,
@@ -3047,12 +3230,25 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             await discoverOnce();
           });
         }
+        const values = await settings.get();
+        const offerEntries = await Promise.all(
+          projects.map(async (project) => {
+            const decision = await projectAutolinkDecision(project, [], values.autoBind);
+            return [
+              project.id,
+              decision.kind === "offer"
+                ? (autolinkOffers.get(project.id) ?? decision.teams)
+                : [],
+            ] as const;
+          }),
+        );
         return buildBindingsView({
           projects,
           bindings: store.bindings(),
           teams: store.teams(),
           workspaces: store.workspaces(),
           workspaceName: store.workspace()?.name ?? null,
+          offers: new Map(offerEntries),
         });
       },
 
@@ -3061,7 +3257,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         if (team === null) {
           return { ok: false, message: "That team isn't in the local copy yet. Try again in a moment." };
         }
-        store.setBinding(projectId, teamId, role, now());
+        await bindProject(
+          { store, kv, now },
+          { projectId, teamId, role, origin: "manual" },
+        );
+        autolinkCooldowns.delete(projectId);
+        autolinkOffers.delete(projectId);
         refreshBindings();
         publishStructure();
         detachBackfill("backfill", false);
@@ -3072,7 +3273,9 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       },
 
       async unbind({ projectId, teamId }) {
-        store.removeBinding(projectId, teamId);
+        await unbindProject({ store, kv, now }, { projectId, teamId });
+        autolinkCooldowns.delete(projectId);
+        autolinkOffers.delete(projectId);
         refreshBindings();
         publishStructure();
         // The issues stay, which is deliberate: a mis-click that dropped a
@@ -3266,7 +3469,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             .join(" and ");
           return {
             ok: false,
-            message: `${teamKey} exists in more than one connected workspace — ${sides}. Bind from this plugin's settings, where teams are labelled by workspace.`,
+            message: `${teamKey} exists in more than one connected workspace — ${sides}. Bind from the Linear panel, where teams are labelled by workspace.`,
           };
         }
         const team = matches[0]!;
@@ -3277,7 +3480,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             message: "Name a project with --project <id>; this command has no thread to infer one from.",
           };
         }
-        store.setBinding(resolved, team.id, role, now());
+        await bindProject(
+          { store, kv, now },
+          { projectId: resolved, teamId: team.id, role, origin: "manual" },
+        );
+        autolinkCooldowns.delete(resolved);
+        autolinkOffers.delete(resolved);
         refreshBindings();
         detachBackfill("backfill", false);
         publishStructure();
@@ -3298,7 +3506,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             .join(" and ");
           return {
             ok: false,
-            message: `${teamKey} exists in more than one connected workspace — ${sides}. Nothing was unbound; use this plugin's settings, where teams are labelled by workspace.`,
+            message: `${teamKey} exists in more than one connected workspace — ${sides}. Nothing was unbound; use the Linear panel, where teams are labelled by workspace.`,
           };
         }
         const team = matches[0]!;
@@ -3306,7 +3514,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         if (resolved === null) {
           return { ok: false, message: "Name a project with --project <id>." };
         }
-        store.removeBinding(resolved, team.id);
+        await unbindProject(
+          { store, kv, now },
+          { projectId: resolved, teamId: team.id },
+        );
+        autolinkCooldowns.delete(resolved);
+        autolinkOffers.delete(resolved);
         refreshBindings();
         publishStructure();
         return { ok: true, message: `Unbound ${team.key}.` };

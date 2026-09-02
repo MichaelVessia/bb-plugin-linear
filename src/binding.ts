@@ -7,6 +7,9 @@
  *      below that already persisted. Ground truth; never re-litigated here.
  *   2. **The branch name** — Linear generated it (`gitBranchFormat`), bb
  *      checked it out, and the mirror indexes it. Deterministic, auto-binds.
+ *   2.5 **An issue key in a hand-edited branch** — when the branch no longer
+ *      byte-matches Linear's stored branch name, its explicit key still names
+ *      the issue. Deterministic and scope-checked, auto-binds.
  *   3. **An issue key in the thread's text** — "fix LIN-12" names its issue.
  *      Deterministic when the key resolves in scope, auto-binds.
  *   4. **A fuzzy title match** — never binds. It becomes a *suggestion* the
@@ -19,6 +22,7 @@
  */
 
 import { identifiersInText } from "./select/identifiers.js";
+import { identifierFromBranch } from "./git/remote.js";
 import type { IssueRow, ThreadLinkOrigin, ThreadLinkRow } from "./store/rows.js";
 
 export interface LadderIssue {
@@ -90,6 +94,24 @@ export function resolveBinding(deps: LadderDeps, input: LadderInput): LadderOutc
       .find((issue) => deps.readTeamIds.has(issue.teamId));
     if (match !== undefined) {
       return { kind: "bound", issueId: match.id, teamId: match.teamId, origin: "branch", isNew: true };
+    }
+
+    // Rung 2.5 — a human-edited branch can retain the issue key while no
+    // longer matching Linear's stored Issue.branchName byte-for-byte. The
+    // identifier lookup is also where the caller applies thread-decline
+    // memory, so undo suppresses this rung exactly as it suppresses rung 2.
+    const identifier = identifierFromBranch(input.branchName);
+    if (identifier !== null) {
+      const issue = deps.issueByIdentifier(identifier);
+      if (issue !== null && deps.readTeamIds.has(issue.teamId)) {
+        return {
+          kind: "bound",
+          issueId: issue.id,
+          teamId: issue.teamId,
+          origin: "branch",
+          isNew: true,
+        };
+      }
     }
   }
 

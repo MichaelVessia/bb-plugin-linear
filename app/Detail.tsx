@@ -109,7 +109,7 @@ function DetailBody({
           <p className="bbl-text text-sm">{result.message}</p>
         </div>
         <p className="text-sm text-muted-foreground">
-          Bindings live in this plugin&apos;s settings, or on the command line:{" "}
+          Bind teams from the Linear panel, or on the command line:{" "}
           <code className="text-foreground">bb linear bind &lt;TEAM-KEY&gt;</code>.
         </p>
       </div>

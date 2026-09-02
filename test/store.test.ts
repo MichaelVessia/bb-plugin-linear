@@ -306,8 +306,20 @@ describe("bindings", () => {
     store.setBinding("proj_1", "team_des", "read", NOW);
     store.setBinding("proj_1", "team_des", "write", NOW);
     expect(store.bindingsForProject("proj_1")).toEqual([
-      { projectId: "proj_1", teamId: "team_des", role: "write", boundAt: NOW },
+      {
+        projectId: "proj_1",
+        teamId: "team_des",
+        role: "write",
+        boundAt: NOW,
+        origin: "manual",
+      },
     ]);
+  });
+
+  it("round-trips automatic binding provenance", () => {
+    const store = createTestStore();
+    store.setBinding("proj_1", "team_eng", "primary", NOW, "auto");
+    expect(store.bindingsForProject("proj_1")[0]?.origin).toBe("auto");
   });
 });
 
