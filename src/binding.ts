@@ -1,17 +1,28 @@
 /**
  * The binding ladder: which Linear issue is this bb thread working on?
  *
- * Four rungs, strongest first, and the strength ordering is the design:
+ * Five rungs, strongest first, and the strength ordering is the design:
  *
  *   1. **An existing link** — a spawn, a manual `bb linear link`, or a rung
  *      below that already persisted. Ground truth; never re-litigated here.
+ *      A later user message naming a *different* issue never re-binds — it
+ *      surfaces as an alternate the user can act on.
  *   2. **The branch name** — Linear generated it (`gitBranchFormat`), bb
  *      checked it out, and the mirror indexes it. Deterministic, auto-binds.
  *   2.5 **An issue key in a hand-edited branch** — when the branch no longer
  *      byte-matches Linear's stored branch name, its explicit key still names
  *      the issue. Deterministic and scope-checked, auto-binds.
- *   3. **An issue key in the thread's text** — "fix LIN-12" names its issue.
- *      Deterministic when the key resolves in scope, auto-binds.
+ *   3. **An issue key in a USER message** — "fix otto-2222" names its issue.
+ *      Deterministic when the key resolves in scope, auto-binds — and only
+ *      user-authored text qualifies. Assistant and tool output names every
+ *      issue it *researched* (an old PR's ticket, a related regression), which
+ *      is exactly the text that once bound a thread to the wrong issue. The
+ *      caller enforces the provenance; this file documents the contract.
+ *      The first key in the opening message wins; every other in-scope key
+ *      the user named becomes an alternate suggestion.
+ *   3.5 **An issue key in the thread's title** — never binds, because a bb
+ *      title's authorship is unknowable: bb generates titles from model
+ *      output and agents rename threads. A key there is a strong *suggestion*.
  *   4. **A fuzzy title match** — never binds. It becomes a *suggestion* the
  *      user confirms with one click, because a wrong binding combined with
  *      write-back moves the wrong ticket, and the suggestion UI makes being
@@ -43,14 +54,30 @@ export interface LadderDeps {
   readTeamIds: ReadonlySet<string>;
 }
 
+/** A user-authored text worth scanning for issue keys. */
+export interface LadderMessage {
+  readonly text: string;
+  /** Which surface carried the text, for provenance — e.g. "the opening user
+   *  message". User-authored surfaces ONLY: the caller must never put
+   *  assistant or tool text here. */
+  readonly label: string;
+}
+
 export interface LadderInput {
   readonly threadId: string;
   readonly branchName: string | null;
-  /** Texts worth scanning for issue keys, in confidence order — the thread
-   *  title first, then whatever messages the caller had at hand. */
-  readonly texts: readonly string[];
-  /** The thread title alone, for the fuzzy rung. */
+  /** User-authored texts only, the opening message first. */
+  readonly userMessages: readonly LadderMessage[];
+  /** The thread title, for the key-suggestion and fuzzy rungs. Titles never
+   *  bind: bb generates them from model output. */
   readonly title: string | null;
+}
+
+/** Another issue the evidence named, offered rather than bound. */
+export interface LadderAlternate {
+  readonly issueId: string;
+  readonly identifier: string;
+  readonly title: string;
 }
 
 export type LadderOutcome =
@@ -62,6 +89,13 @@ export type LadderOutcome =
       /** False when rung 1 answered — the link already exists and the caller
        *  must not write it again. */
       readonly isNew: boolean;
+      /** Which message or branch produced the binding, human-readable — e.g.
+       *  `the opening user message ("otto-2222")`. Null when rung 1 answered
+       *  and the stored row predates provenance. */
+      readonly provenance: string | null;
+      /** Other in-scope issues the user's messages named. Never re-binds;
+       *  the caller surfaces them as suggestions. */
+      readonly alternates: readonly LadderAlternate[];
     }
   | {
       readonly kind: "suggestion";
@@ -72,18 +106,66 @@ export type LadderOutcome =
     }
   | { readonly kind: "none" };
 
+/** Forty alternates is a pasted report, not a set of suggestions. */
+const MAX_ALTERNATES = 3;
+
+/** Every distinct in-scope issue the user's messages name, in first-appearance
+ *  order, each with the surface that first named it. */
+function issuesNamedByUser(
+  deps: LadderDeps,
+  messages: readonly LadderMessage[],
+): { issue: IssueRow; label: string; identifier: string }[] {
+  const found: { issue: IssueRow; label: string; identifier: string }[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    if (message.text === "") continue;
+    for (const identifier of identifiersInText(message.text).identifiers) {
+      const issue = deps.issueByIdentifier(identifier);
+      if (issue === null || !deps.readTeamIds.has(issue.teamId)) continue;
+      if (seen.has(issue.id)) continue;
+      seen.add(issue.id);
+      found.push({ issue, label: message.label, identifier });
+    }
+  }
+  return found;
+}
+
+function toAlternates(
+  named: readonly { issue: IssueRow }[],
+  excludeIssueId: string,
+): LadderAlternate[] {
+  return named
+    .filter((entry) => entry.issue.id !== excludeIssueId)
+    .slice(0, MAX_ALTERNATES)
+    .map((entry) => ({
+      issueId: entry.issue.id,
+      identifier: entry.issue.identifier,
+      title: entry.issue.title,
+    }));
+}
+
 export function resolveBinding(deps: LadderDeps, input: LadderInput): LadderOutcome {
-  // Rung 1 — an existing link is the answer, whatever made it.
+  // Rung 1 — an existing link is the answer, whatever made it. A later
+  // message naming another issue is surfaced, never silently switched to:
+  // re-binding on mention would let one sentence move the write-back target.
   const existing = deps.threadLink(input.threadId);
   if (existing !== null) {
+    const named =
+      existing.origin === "message" || existing.origin === "branch"
+        ? issuesNamedByUser(deps, input.userMessages)
+        : [];
     return {
       kind: "bound",
       issueId: existing.issueId,
       teamId: existing.teamId,
       origin: existing.origin,
       isNew: false,
+      provenance: existing.provenance ?? null,
+      alternates: toAlternates(named, existing.issueId),
     };
   }
+
+  const named = issuesNamedByUser(deps, input.userMessages);
 
   // Rung 2 — the branch. Scope-checked: a branch that names another team's
   // issue is a fact worth ignoring, not a binding — writing to a board this
@@ -93,7 +175,15 @@ export function resolveBinding(deps: LadderDeps, input: LadderInput): LadderOutc
       .issuesByBranch(input.branchName)
       .find((issue) => deps.readTeamIds.has(issue.teamId));
     if (match !== undefined) {
-      return { kind: "bound", issueId: match.id, teamId: match.teamId, origin: "branch", isNew: true };
+      return {
+        kind: "bound",
+        issueId: match.id,
+        teamId: match.teamId,
+        origin: "branch",
+        isNew: true,
+        provenance: `the branch ${input.branchName}`,
+        alternates: toAlternates(named, match.id),
+      };
     }
 
     // Rung 2.5 — a human-edited branch can retain the issue key while no
@@ -110,19 +200,43 @@ export function resolveBinding(deps: LadderDeps, input: LadderInput): LadderOutc
           teamId: issue.teamId,
           origin: "branch",
           isNew: true,
+          provenance: `the branch ${input.branchName} (${identifier})`,
+          alternates: toAlternates(named, issue.id),
         };
       }
     }
   }
 
-  // Rung 3 — a key in the text. First resolvable identifier wins: the first
-  // key in a message is overwhelmingly the one the message is about.
-  for (const text of input.texts) {
-    if (text === "") continue;
-    for (const identifier of identifiersInText(text).identifiers) {
+  // Rung 3 — a key in a user message. The first key in the opening message
+  // wins: it is overwhelmingly the one the thread is about. Everything else
+  // the user named rides along as alternates the chip can offer.
+  const first = named[0];
+  if (first !== undefined) {
+    return {
+      kind: "bound",
+      issueId: first.issue.id,
+      teamId: first.issue.teamId,
+      origin: "message",
+      isNew: true,
+      provenance: `${first.label} ("${first.identifier}")`,
+      alternates: toAlternates(named, first.issue.id),
+    };
+  }
+
+  // Rung 3.5 — a key in the title. Suggestion only: bb titles are generated
+  // from model output and agents rename threads, so a title's authorship is
+  // unknowable — exactly the text that must never bind on its own.
+  if (input.title !== null && input.title !== "") {
+    for (const identifier of identifiersInText(input.title).identifiers) {
       const issue = deps.issueByIdentifier(identifier);
       if (issue !== null && deps.readTeamIds.has(issue.teamId)) {
-        return { kind: "bound", issueId: issue.id, teamId: issue.teamId, origin: "message", isNew: true };
+        return {
+          kind: "suggestion",
+          issueId: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          score: 1,
+        };
       }
     }
   }

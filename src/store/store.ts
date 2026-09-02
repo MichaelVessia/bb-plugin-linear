@@ -2101,12 +2101,13 @@ export function createStore(db: Database): Store {
 
     linkThread(row) {
       db.prepare(
-        `INSERT INTO thread_link (thread_id, issue_id, team_id, project_id, created_at, origin)
-         VALUES (@threadId, @issueId, @teamId, @projectId, @createdAt, @origin)
+        `INSERT INTO thread_link (thread_id, issue_id, team_id, project_id, created_at, origin, provenance)
+         VALUES (@threadId, @issueId, @teamId, @projectId, @createdAt, @origin, @provenance)
          ON CONFLICT(thread_id) DO UPDATE SET
            issue_id = excluded.issue_id, team_id = excluded.team_id,
-           project_id = excluded.project_id, origin = excluded.origin`,
-      ).run(row);
+           project_id = excluded.project_id, origin = excluded.origin,
+           provenance = excluded.provenance`,
+      ).run({ ...row, provenance: row.provenance ?? null });
     },
 
     unlinkThread(threadId) {
@@ -2117,7 +2118,7 @@ export function createStore(db: Database): Store {
       const row = db
         .prepare(
           `SELECT thread_id AS threadId, issue_id AS issueId, team_id AS teamId,
-                  project_id AS projectId, created_at AS createdAt, origin
+                  project_id AS projectId, created_at AS createdAt, origin, provenance
              FROM thread_link WHERE thread_id = ?`,
         )
         .get(threadId) as ThreadLinkRow | undefined;
@@ -2129,7 +2130,7 @@ export function createStore(db: Database): Store {
       return db
         .prepare(
           `SELECT thread_id AS threadId, issue_id AS issueId, team_id AS teamId,
-                  project_id AS projectId, created_at AS createdAt, origin
+                  project_id AS projectId, created_at AS createdAt, origin, provenance
              FROM thread_link WHERE thread_id IN (${placeholders(threadIds.length)})`,
         )
         .all(...threadIds) as ThreadLinkRow[];
@@ -2140,7 +2141,7 @@ export function createStore(db: Database): Store {
       return db
         .prepare(
           `SELECT thread_id AS threadId, issue_id AS issueId, team_id AS teamId,
-                  project_id AS projectId, created_at AS createdAt, origin
+                  project_id AS projectId, created_at AS createdAt, origin, provenance
              FROM thread_link WHERE issue_id IN (${placeholders(issueIds.length)})`,
         )
         .all(...issueIds) as ThreadLinkRow[];

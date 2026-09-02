@@ -84,11 +84,13 @@ describe("Linear status glyph projection", () => {
           glyph,
           url: null,
           origin: "manual",
+          provenance: null,
           stateOptions: [
             { id: "started", name: "In progress", type: "started", tone: "started", glyph },
           ],
         },
         suggestion: null,
+        alternates: [],
       }).success,
     ).toBe(true);
   });

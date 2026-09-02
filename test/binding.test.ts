@@ -5,6 +5,7 @@ import {
   titleSimilarity,
   type LadderDeps,
   type LadderInput,
+  type LadderMessage,
 } from "../src/binding.js";
 import type { IssueRow, ThreadLinkRow } from "../src/store/rows.js";
 
@@ -62,8 +63,16 @@ function deps(overrides: Partial<LadderDeps> = {}): LadderDeps {
   };
 }
 
+function opening(text: string): LadderMessage {
+  return { text, label: "the opening user message" };
+}
+
+function later(text: string): LadderMessage {
+  return { text, label: "a later user message" };
+}
+
 function input(overrides: Partial<LadderInput> = {}): LadderInput {
-  return { threadId: "th_1", branchName: null, texts: [], title: null, ...overrides };
+  return { threadId: "th_1", branchName: null, userMessages: [], title: null, ...overrides };
 }
 
 describe("rung 1 — an existing link", () => {
@@ -80,16 +89,78 @@ describe("rung 1 — an existing link", () => {
       deps({ threadLink: () => link }),
       // A branch and a key that would both bind to M2 — the manual link to M4
       // still answers.
-      input({ branchName: "feature/lin-2-m2-sqlite-mirror", texts: ["work on LIN-2"] }),
+      input({
+        branchName: "feature/lin-2-m2-sqlite-mirror",
+        userMessages: [opening("work on LIN-2")],
+      }),
     );
-    expect(outcome).toEqual({ kind: "bound", issueId: "i4", teamId: "team_lin", origin: "manual", isNew: false });
+    expect(outcome).toMatchObject({ kind: "bound", issueId: "i4", teamId: "team_lin", origin: "manual", isNew: false });
+  });
+
+  it("keeps its stored provenance", () => {
+    const link: ThreadLinkRow = {
+      threadId: "th_1",
+      issueId: "i2",
+      teamId: "team_lin",
+      projectId: null,
+      createdAt: 1,
+      origin: "message",
+      provenance: 'the opening user message ("lin-2")',
+    };
+    const outcome = resolveBinding(deps({ threadLink: () => link }), input());
+    expect(outcome).toMatchObject({
+      kind: "bound",
+      provenance: 'the opening user message ("lin-2")',
+    });
+  });
+
+  it("never silently switches a message-bound thread — a later key becomes an alternate", () => {
+    const link: ThreadLinkRow = {
+      threadId: "th_1",
+      issueId: "i2",
+      teamId: "team_lin",
+      projectId: null,
+      createdAt: 1,
+      origin: "message",
+    };
+    const outcome = resolveBinding(
+      deps({ threadLink: () => link }),
+      input({ userMessages: [opening("work on LIN-2"), later("actually see LIN-4 too")] }),
+    );
+    expect(outcome).toMatchObject({ kind: "bound", issueId: "i2", isNew: false });
+    expect(outcome.kind === "bound" ? outcome.alternates : []).toEqual([
+      { issueId: "i4", identifier: "LIN-4", title: M4.title },
+    ]);
+  });
+
+  it("does not second-guess a manual link with alternates", () => {
+    const link: ThreadLinkRow = {
+      threadId: "th_1",
+      issueId: "i2",
+      teamId: "team_lin",
+      projectId: null,
+      createdAt: 1,
+      origin: "manual",
+    };
+    const outcome = resolveBinding(
+      deps({ threadLink: () => link }),
+      input({ userMessages: [opening("see LIN-4")] }),
+    );
+    expect(outcome).toMatchObject({ kind: "bound", issueId: "i2", alternates: [] });
   });
 });
 
 describe("rung 2 — the branch", () => {
   it("binds deterministically with branch provenance", () => {
     const outcome = resolveBinding(deps(), input({ branchName: "feature/lin-2-m2-sqlite-mirror" }));
-    expect(outcome).toEqual({ kind: "bound", issueId: "i2", teamId: "team_lin", origin: "branch", isNew: true });
+    expect(outcome).toMatchObject({
+      kind: "bound",
+      issueId: "i2",
+      teamId: "team_lin",
+      origin: "branch",
+      isNew: true,
+      provenance: "the branch feature/lin-2-m2-sqlite-mirror",
+    });
   });
 
   it("ignores a branch that names another team's issue", () => {
@@ -103,12 +174,13 @@ describe("rung 2 — the branch", () => {
 describe("rung 2.5 — an identifier retained in a hand-edited branch", () => {
   it("binds when the branch no longer exactly matches Linear's stored branch name", () => {
     const outcome = resolveBinding(deps(), input({ branchName: "work/lin-2-custom-name" }));
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       kind: "bound",
       issueId: "i2",
       teamId: "team_lin",
       origin: "branch",
       isNew: true,
+      provenance: "the branch work/lin-2-custom-name (LIN-2)",
     });
   });
 
@@ -134,26 +206,87 @@ describe("rung 2.5 — an identifier retained in a hand-edited branch", () => {
   });
 });
 
-describe("rung 3 — a key in the text", () => {
-  it("binds the first resolvable identifier", () => {
+describe("rung 3 — a key in a USER message", () => {
+  it("binds the first resolvable identifier from the opening message, with provenance", () => {
     const outcome = resolveBinding(
       deps(),
-      input({ texts: ["please pick up LIN-4 after LIN-2"] }),
+      input({ userMessages: [opening("please pick up LIN-4 after LIN-2")] }),
     );
-    expect(outcome).toEqual({ kind: "bound", issueId: "i4", teamId: "team_lin", origin: "message", isNew: true });
+    expect(outcome).toMatchObject({
+      kind: "bound",
+      issueId: "i4",
+      teamId: "team_lin",
+      origin: "message",
+      isNew: true,
+      provenance: 'the opening user message ("LIN-4")',
+    });
+  });
+
+  it("matches keys case-insensitively and normalises to uppercase", () => {
+    const outcome = resolveBinding(
+      deps(),
+      input({ userMessages: [opening("continue lin-2 please")] }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "bound",
+      issueId: "i2",
+      origin: "message",
+      provenance: 'the opening user message ("LIN-2")',
+    });
+  });
+
+  it("exposes every other user-named key as an alternate", () => {
+    const outcome = resolveBinding(
+      deps(),
+      input({ userMessages: [opening("start with LIN-2"), later("related: LIN-4")] }),
+    );
+    expect(outcome).toMatchObject({ kind: "bound", issueId: "i2" });
+    expect(outcome.kind === "bound" ? outcome.alternates : []).toEqual([
+      { issueId: "i4", identifier: "LIN-4", title: M4.title },
+    ]);
   });
 
   it("skips keys that resolve out of scope and keys that resolve to nothing", () => {
-    const outcome = resolveBinding(deps(), input({ texts: ["OPS-9 then NOPE-1 then LIN-2"] }));
-    expect(outcome).toEqual({ kind: "bound", issueId: "i2", teamId: "team_lin", origin: "message", isNew: true });
+    const outcome = resolveBinding(
+      deps(),
+      input({ userMessages: [opening("OPS-9 then NOPE-1 then LIN-2")] }),
+    );
+    expect(outcome).toMatchObject({ kind: "bound", issueId: "i2", teamId: "team_lin", origin: "message", isNew: true });
   });
 
   it("loses to the branch", () => {
     const outcome = resolveBinding(
       deps(),
-      input({ branchName: "feature/lin-2-m2-sqlite-mirror", texts: ["LIN-4"] }),
+      input({ branchName: "feature/lin-2-m2-sqlite-mirror", userMessages: [opening("LIN-4")] }),
     );
     expect(outcome).toMatchObject({ origin: "branch", issueId: "i2" });
+    // The user-named issue still surfaces, as an alternate.
+    expect(outcome.kind === "bound" ? outcome.alternates : []).toEqual([
+      { issueId: "i4", identifier: "LIN-4", title: M4.title },
+    ]);
+  });
+});
+
+describe("rung 3.5 — a key in the title never binds", () => {
+  it("suggests instead, because a bb title's authorship is unknowable", () => {
+    // The regression this guards: assistant output mentioned an old, related
+    // issue; only user messages may bind. A title (or any non-user text) with
+    // a key must come back as a suggestion the user confirms.
+    const outcome = resolveBinding(deps(), input({ title: "Fix LIN-4 nav panel" }));
+    expect(outcome).toMatchObject({ kind: "suggestion", issueId: "i4", identifier: "LIN-4" });
+  });
+
+  it("loses to a key in a user message", () => {
+    const outcome = resolveBinding(
+      deps(),
+      input({ title: "Fix LIN-4 nav panel", userMessages: [opening("work on lin-2")] }),
+    );
+    expect(outcome).toMatchObject({ kind: "bound", issueId: "i2", origin: "message" });
+  });
+
+  it("respects read scope", () => {
+    const outcome = resolveBinding(deps(), input({ title: "Rotate OPS-9 pager" }));
+    expect(outcome.kind).toBe("none");
   });
 });
 

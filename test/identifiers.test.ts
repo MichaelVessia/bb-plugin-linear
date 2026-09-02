@@ -51,8 +51,20 @@ describe("identifiersInText", () => {
     expect(found("ENG-12abc")).toEqual([]);
   });
 
-  it("ignores lowercase, which Linear never produces", () => {
-    expect(found("eng-42")).toEqual([]);
+  it("matches lowercase and mixed case, normalised to uppercase", () => {
+    // Linear renders OTTO-2222, but people type otto-2222 in chat. The
+    // canonical form is what Linear produces, not what a person messages —
+    // and the extra lowercase noise this admits resolves to nothing, exactly
+    // like the uppercase noise always has.
+    expect(found("eng-42")).toEqual(["ENG-42"]);
+    expect(found("otto-2222")).toEqual(["OTTO-2222"]);
+    expect(found("Otto-2222 and otto-2222 and OTTO-2222")).toEqual(["OTTO-2222"]);
+  });
+
+  it("keeps the non-word anchoring in lowercase too", () => {
+    expect(found("sheng-12")).toEqual(["SHENG-12"]);
+    expect(found("sheng-12")).not.toContain("ENG-12");
+    expect(found("eng-12abc")).toEqual([]);
   });
 
   it("ignores a single-letter key, which would match every ordered list", () => {
