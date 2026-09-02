@@ -651,6 +651,7 @@ function statusAsJson(report: StatusReport): unknown {
     sync: report.sync,
     webhook: report.webhook,
     writeRefusal: report.writeRefusal,
+    workspaces: report.workspaces ?? [],
   };
 }
 

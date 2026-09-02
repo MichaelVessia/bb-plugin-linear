@@ -89,7 +89,12 @@ import {
   toIssueInput,
 } from "./src/sync/apply.js";
 import type { IssueDetailNode, IssueNode } from "./src/linear/types.js";
-import { resolveBinding, type LadderDeps } from "./src/binding.js";
+import {
+  resolveBinding,
+  type LadderAlternate,
+  type LadderDeps,
+  type LadderMessage,
+} from "./src/binding.js";
 import { crossTeamRefusal, scopeFor } from "./src/bindings.js";
 import {
   inferProjectLink,
@@ -107,7 +112,11 @@ import {
   connectedState,
   describeConnection,
 } from "./src/select/connection.js";
-import type { DoctorCheck, StatusReport } from "./src/select/status.js";
+import type {
+  DoctorCheck,
+  StatusReport,
+  WorkspaceStatusLine,
+} from "./src/select/status.js";
 import { createLifetime } from "./src/safe.js";
 import {
   NEEDS_CONFIGURATION_MESSAGE,
@@ -596,6 +605,26 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       return grouped;
     }
 
+    /**
+     * Configured slots whose workspace has never been read.
+     *
+     * The gate every discovery trigger shares. It used to be
+     * `store.teams().length === 0`, which is only true before the FIRST
+     * workspace exists — so a second key pasted after that never loaded until
+     * an explicit `bb linear refresh`. Keyed by slot, a fresh key is
+     * undiscovered no matter how many workspaces are already mirrored.
+     */
+    async function undiscoveredSlots(): Promise<CredentialSlot[]> {
+      const slots = await activeSlots();
+      const discovered = new Set(store.workspaces().map((workspace) => workspace.slot));
+      return slots.map((entry) => entry.slot).filter((slot) => !discovered.has(slot));
+    }
+
+    /** When the sync loop last tried discovery for an undiscovered slot, so a
+     *  key that keeps failing is probed on this interval rather than per tick. */
+    let lastDiscoveryAttemptAt = 0;
+    const DISCOVERY_RETRY_MS = 5 * 60_000;
+
     let discovering: Promise<void> | null = null;
 
     /** Single-flight. Two surfaces mounting at once must not both walk the
@@ -802,22 +831,25 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         if (store.threadLink(thread.id) !== null) publish("linear:data");
       });
       lifetime.detach("binding", async () => {
-        await evaluateThreadBinding(thread.id, []);
+        await evaluateThreadBinding(thread.id);
         // After the ladder, so a binding this very event created (a fresh
         // branch checkout, say) triggers the move in the same beat.
         await moveStartedForThread(thread.id);
         await runTransitionForThread(thread.id);
       });
     });
-    bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
+    bb.events.on("thread.idle", ({ thread }) => {
       activeThreads.delete(thread.id);
       lifetime.run("thread-idle", () => {
         if (store.threadLink(thread.id) !== null) publish("linear:data");
       });
-      // The idle event carries the last assistant text for free — the one
-      // message most likely to say which issue the work turned out to be.
+      // The idle event's `lastAssistantText` is deliberately NOT fed to the
+      // ladder. Assistant text names every issue it *researched* — an old
+      // PR's ticket, a related regression — and feeding it here is exactly
+      // how a thread once bound to the wrong issue. The ladder reads the
+      // user's own prompts instead.
       lifetime.detach("binding", async () => {
-        await evaluateThreadBinding(thread.id, lastAssistantText === null ? [] : [lastAssistantText]);
+        await evaluateThreadBinding(thread.id);
         await runTransitionForThread(thread.id);
       });
     });
@@ -833,6 +865,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         });
         if (event !== "thread.failed") {
           suggestions.delete(thread.id);
+          alternatesByThread.delete(thread.id);
           instructionCache.delete(thread.id);
           declined.delete(thread.id);
         }
@@ -951,6 +984,103 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
 
     /* ── Status ──────────────────────────────────────────────────────────── */
 
+    /**
+     * One line per configured key slot, whatever state it is in.
+     *
+     * This is what keeps `status` and `doctor` telling the same story: doctor
+     * counts the keys, so status must render every one of them — including a
+     * key that is set but whose workspace has never been read, which used to
+     * be invisible here and cost a session an hour of chasing the mismatch.
+     */
+    async function workspaceStatusLines(
+      projects: readonly ProjectSummary[],
+    ): Promise<WorkspaceStatusLine[]> {
+      const states = await slotStates(false);
+      if (states.length === 0) return [];
+      const workspaces = store.workspaces();
+      const teams = store.teams();
+      const bindings = store.bindings();
+      const projectNames = new Map(
+        projects.map((project) => [
+          project.id,
+          project.kind === "personal" ? "Personal threads" : project.name,
+        ]),
+      );
+      const teamById = new Map(teams.map((team) => [team.id, team]));
+      const primaryWorkspaceId =
+        workspaces.find((workspace) => workspace.slot === PRIMARY_SLOT)?.id ?? null;
+
+      return states.map((entry): WorkspaceStatusLine => {
+        const workspace =
+          workspaces.find((candidate) => candidate.slot === entry.slot) ?? null;
+        const keyState =
+          entry.state.kind === "connected"
+            ? "ok"
+            : entry.state.kind === "checking"
+              ? "checking"
+              : describeConnection(entry.state);
+
+        if (workspace === null) {
+          // The key is set but its workspace has never been discovered. Say
+          // so, with the command that reads it — never silently omit the row.
+          const connectedName =
+            entry.state.kind === "connected" ? entry.state.workspace : null;
+          return {
+            label: entry.label,
+            name: connectedName?.name ?? null,
+            urlKey: connectedName?.urlKey ?? null,
+            viewerName:
+              entry.state.kind === "connected" ? entry.state.viewer.displayName : null,
+            keyState:
+              entry.state.kind === "connected"
+                ? "ok · teams not read yet — bb linear refresh reads them"
+                : `set · workspace not read yet (${keyState}) — bb linear refresh reads it`,
+            teams: null,
+            issuesCached: 0,
+            projectsCached: 0,
+            bindings: [],
+          };
+        }
+
+        // A team recorded before workspaces were plural has no workspace id
+        // and belongs to the primary slot, which is where it came from.
+        const workspaceTeams = teams.filter(
+          (team) =>
+            team.workspaceId === workspace.id ||
+            (team.workspaceId === null && workspace.id === primaryWorkspaceId),
+        );
+        const teamIds = workspaceTeams.map((team) => team.id);
+        const issuesCached =
+          teamIds.length === 0
+            ? 0
+            : store.countIssues({
+                teamIds,
+                includeCompleted: true,
+                includeArchived: true,
+              });
+        const projectsCached = teamIds.length === 0 ? 0 : store.projects(teamIds).length;
+        const teamIdSet = new Set(teamIds);
+        const workspaceBindings = bindings
+          .filter((row) => row.role === "primary" && teamIdSet.has(row.teamId))
+          .map(
+            (row) =>
+              `${projectNames.get(row.projectId) ?? row.projectId} → ${teamById.get(row.teamId)?.key ?? "?"}`,
+          );
+
+        return {
+          label: entry.label,
+          name: workspace.name,
+          urlKey: workspace.urlKey,
+          viewerName: workspace.viewerName,
+          keyState,
+          teams: workspaceTeams.length,
+          issuesCached,
+          projectsCached,
+          bindings: workspaceBindings,
+        };
+      });
+    }
+
     async function statusReport(): Promise<StatusReport> {
       const values = await settings.get();
       const teams = store.teams();
@@ -963,6 +1093,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         workspaceName: store.workspace()?.name ?? null,
         workspaces: store.workspaces(),
       });
+      const workspaceLines = await workspaceStatusLines(projects);
 
       return {
         connection: await connectionState(false),
@@ -987,16 +1118,22 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
                 profile: readSyncProfile(values.syncProfile),
                 intervalMs: currentIntervalMs,
                 lastTickAt,
+                // Across every mirrored team, not just bound ones, so the
+                // total is the sum of the per-workspace lines beside it.
                 issues: store.countIssues({
-                  teamIds: store.boundTeamIds(),
+                  teamIds: teams.map((team) => team.id),
                   includeCompleted: true,
                   includeArchived: true,
                 }),
-                projects: 0,
+                projects: workspaceLines.reduce(
+                  (sum, line) => sum + line.projectsCached,
+                  0,
+                ),
                 lastError: lastSyncError,
               },
         webhook: values.webhookUrl.trim() === "" ? "not configured (polling)" : null,
         writeRefusal: await readWriteRefusal(),
+        workspaces: workspaceLines,
       };
     }
 
@@ -1256,6 +1393,56 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           `${idOrIdentifier} exists in more than one connected workspace. Use the issue id or URL.`,
         );
       }
+      const match = matches.values().next().value ?? null;
+      if (match === null) return null;
+      applyIssueDetail(store, match, now(), {
+        debug: (message) => lifetime.log("debug", message),
+      });
+      publish("linear:data");
+      return store.issue(match.id);
+    }
+
+    /**
+     * Resolve an identifier through EVERY configured key, for explicit
+     * commands. `refreshIssue` resolves only through the caller's read scope
+     * — right for automatic paths, but `bb linear link OTTO-2222` is a person
+     * naming an exact issue, and refusing to even look it up because its team
+     * is not bound or synced yet is how "No readable issue called OTTO-2222"
+     * lied about an issue that exists. One fetch per key, cached in the
+     * mirror, scope enforced by the caller with the full story in hand.
+     */
+    async function resolveIssueOnDemand(
+      idOrIdentifier: string,
+      signal?: AbortSignal,
+    ): Promise<IssueRow | "ambiguous" | null> {
+      const slots = await activeSlots();
+      const results = await Promise.all(
+        slots.map(async (entry): Promise<IssueDetailNode | null> => {
+          try {
+            const result = await clientForSlot(entry.slot).issueDetail(idOrIdentifier, {
+              initiator: "user",
+              ...(signal ? { signal } : {}),
+            });
+            return result.issue;
+          } catch (error) {
+            // "No such issue" arrives as a GraphQL error; anything else is a
+            // transport fact worth a debug line, never a hard failure — the
+            // other keys' answers still count.
+            if (!(isLinearError(error) && error.code === "query")) {
+              lifetime.log(
+                "debug",
+                `on-demand ${idOrIdentifier} via ${slotLabel(entry.slot)}: ${describeError(error)}`,
+              );
+            }
+            return null;
+          }
+        }),
+      );
+      const matches = new Map<string, IssueDetailNode>();
+      for (const node of results) {
+        if (node !== null) matches.set(node.id, node);
+      }
+      if (matches.size > 1) return "ambiguous";
       const match = matches.values().next().value ?? null;
       if (match === null) return null;
       applyIssueDetail(store, match, now(), {
@@ -1649,6 +1836,18 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             throw Object.assign(new Error(NEEDS_CONFIGURATION_MESSAGE), {
               name: "NeedsConfigurationError",
             });
+          }
+
+          // Every configured key loads on start, and a key pasted mid-run
+          // loads on the next beat — `bb linear refresh` must never be a
+          // prerequisite for a workspace to exist. Single-flight, and rate
+          // limited: a broken second key must not warn once per tick.
+          if (
+            now() - lastDiscoveryAttemptAt >= DISCOVERY_RETRY_MS &&
+            (await undiscoveredSlots()).length > 0
+          ) {
+            lastDiscoveryAttemptAt = now();
+            await lifetime.runAsync("discover", discoverOnce, undefined);
           }
 
           const teamIds = expandTeams(store.boundTeamIds(), store.teams(), values.includeSubTeams);
@@ -2678,6 +2877,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       { issueId: string; identifier: string; title: string }
     >();
 
+    /** Other in-scope issues the user's messages named, per bound thread.
+     *  In memory for the same reason suggestions are: hints, not state. */
+    const alternatesByThread = new Map<string, readonly LadderAlternate[]>();
+
+    /** How many user prompts the ladder scans. Past twenty, a key is far more
+     *  likely a digression than the thread's subject. */
+    const USER_MESSAGE_SCAN_LIMIT = 20;
+
     /** An unbound project can produce the same non-binding answer on every
      *  active/idle event. Keep that answer quiet for one minute; a successful
      *  bind removes the project from this path entirely. */
@@ -2862,10 +3069,44 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       );
     }
 
-    async function evaluateThreadBinding(
-      threadId: string,
-      extraTexts: readonly string[],
-    ): Promise<void> {
+    /**
+     * The user's own messages, oldest first, each labelled for provenance.
+     *
+     * This — and only this — is the text the message rung may bind from.
+     * Assistant and tool output is never read here: it names every issue the
+     * work *touched*, and feeding it to the ladder is how a thread once bound
+     * to an old PR's issue the assistant merely mentioned while researching.
+     * The filter is deliberately three-sided: `role: "user"` drops assistant
+     * rows, `initiator: "user"` drops agent steers and system child-outcome
+     * messages that render on the user side, and `unlabeled` drops the
+     * remaining system-kind rows.
+     */
+    async function userMessagesFor(threadId: string): Promise<LadderMessage[]> {
+      const timeline = await lifetime.runAsync(
+        "timeline",
+        () => bb.sdk.threads.timeline({ threadId }),
+        null,
+      );
+      if (timeline === null) return [];
+      const messages: LadderMessage[] = [];
+      for (const row of timeline.rows) {
+        if (messages.length >= USER_MESSAGE_SCAN_LIMIT) break;
+        if (row.kind !== "conversation" || row.role !== "user") continue;
+        if (row.initiator !== "user") continue;
+        if (row.systemMessageKind !== "unlabeled") continue;
+        if (row.turnRequest.status === "rejected") continue;
+        const text = row.text.trim();
+        if (text === "") continue;
+        messages.push({
+          text,
+          label:
+            messages.length === 0 ? "the opening user message" : "a later user message",
+        });
+      }
+      return messages;
+    }
+
+    async function evaluateThreadBinding(threadId: string): Promise<void> {
       const thread = await threadIfAny(threadId);
       if (thread === null) return;
 
@@ -2882,6 +3123,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       }
 
       const title = thread.title ?? null;
+      const userMessages = await userMessagesFor(threadId);
       let scope = projectId === null ? null : scopeFor(projectId, bindingSnapshot);
       let readTeamIds = new Set(scope?.readTeamIds ?? []);
       if (readTeamIds.size === 0) {
@@ -2901,7 +3143,10 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         const values = await settings.get();
         const decision = await projectAutolinkDecision(
           project,
-          evidenceForAutolink(branchName, [title ?? "", ...extraTexts]),
+          evidenceForAutolink(branchName, [
+            title ?? "",
+            ...userMessages.map((message) => message.text),
+          ]),
           values.autoBind,
         );
         if (decision.kind !== "bind") {
@@ -2941,7 +3186,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       const outcome = resolveBinding(ladderDeps(readTeamIds, threadId), {
         threadId,
         branchName,
-        texts: [title ?? "", ...extraTexts],
+        userMessages,
         title,
       });
 
@@ -2954,8 +3199,23 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
             projectId,
             createdAt: now(),
             origin: outcome.origin,
+            provenance: outcome.provenance,
           });
           suggestions.delete(threadId);
+          publish("linear:data");
+        }
+        // Other issues the user named never re-bind a bound thread — they
+        // surface as alternates the chip and the tool can offer.
+        const previous = alternatesByThread.get(threadId);
+        if (outcome.alternates.length > 0) {
+          alternatesByThread.set(threadId, outcome.alternates);
+        } else {
+          alternatesByThread.delete(threadId);
+        }
+        if (
+          JSON.stringify(previous ?? []) !== JSON.stringify(outcome.alternates) &&
+          !outcome.isNew
+        ) {
           publish("linear:data");
         }
       } else if (outcome.kind === "suggestion") {
@@ -2965,9 +3225,11 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           identifier: outcome.identifier,
           title: outcome.title,
         });
+        alternatesByThread.delete(threadId);
         if (previous?.issueId !== outcome.issueId) publish("linear:data");
-      } else if (suggestions.delete(threadId)) {
-        publish("linear:data");
+      } else {
+        alternatesByThread.delete(threadId);
+        if (suggestions.delete(threadId)) publish("linear:data");
       }
       rebuildInstruction(threadId);
     }
@@ -2995,10 +3257,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       issue: IssueRow,
     ): void {
       const reference = safeIssueReference(issue.identifier, issue.id);
+      const provenance =
+        link.provenance === null || link.provenance === undefined
+          ? ""
+          : ` — ${link.provenance}`;
       instructionCache.set(
         threadId,
         [
-          `This thread is linked to Linear issue ${reference} (bound via ${link.origin}).`,
+          `This thread is linked to Linear issue ${reference} (bound via ${link.origin}${provenance}).`,
           UNTRUSTED_LINEAR_POLICY,
           `Read it with \`bb linear issue ${reference} --comments\`;`,
           `comment with \`bb linear comment ${reference} -- <text>\`;`,
@@ -3052,6 +3318,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         }
         store.unlinkThread(threadId);
         suggestions.delete(threadId);
+        alternatesByThread.delete(threadId);
         instructionCache.delete(threadId);
         publish("linear:data");
         return { ok: true, message: "Unlinked." };
@@ -3081,11 +3348,101 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         projectId,
         createdAt: now(),
         origin: "manual",
+        provenance: null,
       });
       suggestions.delete(threadId);
+      alternatesByThread.delete(threadId);
       rebuildInstruction(threadId);
       publish("linear:data");
       return { ok: true, message: `Linked to ${issue.identifier}.` };
+    }
+
+    /**
+     * The explicit link path shared by `bb linear link`, the panel's bind rpc
+     * and `linear_thread_bind`: resolve the identifier — mirror first, then
+     * the project's scope, then EVERY configured key on demand — and bind
+     * bb-locally. Never writes to Linear. When the issue exists but its team
+     * is outside the project's scope, the refusal names the exact commands
+     * that fix it rather than pretending the issue does not exist.
+     */
+    async function linkThreadExplicit(
+      threadId: string,
+      idOrIdentifier: string | null,
+      projectId: string | null,
+    ): Promise<{ ok: boolean; message: string | null }> {
+      if (idOrIdentifier === null) return bindManually(threadId, null, projectId);
+      if (projectId === null) {
+        return {
+          ok: false,
+          message: "This thread has no project, so no Linear scope can be established.",
+        };
+      }
+      const current = scopeFor(projectId, bindingSnapshot);
+
+      let issue = store.issue(idOrIdentifier);
+      if (issue === null) {
+        const matches = store.issuesByIdentifier(idOrIdentifier);
+        const inScope = matches.filter((entry) =>
+          current.readTeamIds.includes(entry.teamId),
+        );
+        if (inScope.length > 1 || (inScope.length === 0 && matches.length > 1)) {
+          return {
+            ok: false,
+            message: `${idOrIdentifier} exists in more than one connected workspace. Use the issue id or URL.`,
+          };
+        }
+        // A single out-of-scope local match flows on to the scope check
+        // below, where the refusal can name both sides.
+        issue = inScope[0] ?? matches[0] ?? null;
+      }
+      if (issue === null) {
+        issue = await lifetime.runAsync(
+          "issue",
+          () => refreshIssue(idOrIdentifier, current.readTeamIds),
+          null,
+        );
+      }
+      if (issue === null) {
+        const resolved = await lifetime.runAsync(
+          "issue",
+          () => resolveIssueOnDemand(idOrIdentifier),
+          null,
+        );
+        if (resolved === "ambiguous") {
+          return {
+            ok: false,
+            message: `${idOrIdentifier} exists in more than one connected workspace. Use the issue id or URL.`,
+          };
+        }
+        issue = resolved;
+      }
+      if (issue === null) {
+        return {
+          ok: false,
+          message: `No issue called ${idOrIdentifier} in any connected workspace. If it was just created, run: bb linear refresh — then retry.`,
+        };
+      }
+
+      if (!current.readTeamIds.includes(issue.teamId)) {
+        const team = store.team(issue.teamId);
+        const workspace = team === null ? null : store.workspaceForTeam(team.id);
+        const teamName =
+          team === null
+            ? "a team this bb has not read yet (run: bb linear refresh)"
+            : `team ${team.key}${workspace === null ? "" : ` in ${workspace.name}`}`;
+        const bindHint =
+          team === null
+            ? ""
+            : current.primaryTeamId === null
+              ? ` Bind it first: bb linear bind ${team.key} --project ${projectId} — then rerun: bb linear link ${issue.identifier} (it is cached now, so it links instantly).`
+              : ` Add it to this project first: bb linear bind ${team.key} --project ${projectId} --role write — then rerun: bb linear link ${issue.identifier} (it is cached now, so it links instantly).`;
+        return {
+          ok: false,
+          message: `${issue.identifier} is on ${teamName}, which this thread's project is not bound to.${bindHint}`,
+        };
+      }
+
+      return bindManually(threadId, issue.id, projectId);
     }
 
     /* ── Registrations ───────────────────────────────────────────────────── */
@@ -3229,6 +3586,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
                   }),
                 url: issue.url,
                 origin: link.origin,
+                provenance: link.provenance ?? null,
                 stateOptions: [...states]
                   .sort((a, b) => a.position - b.position)
                   .map((entry) => ({
@@ -3247,21 +3605,22 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
                   })),
               },
               suggestion: null,
+              alternates: [...(alternatesByThread.get(threadId) ?? [])],
             };
           }
         }
         // Unbound: kick an evaluation so a chip mounted on a fresh thread
         // converges without waiting for the next lifecycle event.
         lifetime.detach("binding", async () => {
-          await evaluateThreadBinding(threadId, []);
+          await evaluateThreadBinding(threadId);
         });
         const suggestion = suggestions.get(threadId) ?? null;
-        return { binding: null, suggestion };
+        return { binding: null, suggestion, alternates: [] };
       },
 
       async bindThread({ threadId, issueId }) {
         const thread = await threadIfAny(threadId);
-        return bindManually(threadId, issueId, thread?.projectId ?? null);
+        return linkThreadExplicit(threadId, issueId, thread?.projectId ?? null);
       },
 
       async issue({ id }) {
@@ -3621,7 +3980,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         // Mounting the panel is what starts the first read. Doing it here
         // rather than in the factory keeps the load path offline-safe: a
         // flaky connection during an upgrade must not fail activation.
-        if (deps.hasCredential && store.teams().length === 0) {
+        if (deps.hasCredential && (await undiscoveredSlots()).length > 0) {
           lifetime.detach("discover", async () => {
             await discoverOnce();
           });
@@ -3654,7 +4013,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
 
       async bindings() {
         const projects = await projectSummaries();
-        if (store.teams().length === 0) {
+        if ((await undiscoveredSlots()).length > 0) {
           lifetime.detach("discover", async () => {
             await discoverOnce();
           });
@@ -3880,7 +4239,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         };
       },
       teams: async () => {
-        if (store.teams().length === 0) await discoverOnce();
+        if ((await undiscoveredSlots()).length > 0) await discoverOnce();
         const all = store.workspaces();
         const names = all.length > 1 ? new Map(all.map((entry) => [entry.id, entry.name])) : null;
         return {
@@ -3895,7 +4254,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         };
       },
       bind: async ({ teamKey, projectId, role }) => {
-        if (store.teams().length === 0) await discoverOnce();
+        if ((await undiscoveredSlots()).length > 0) await discoverOnce();
         const matches = store.teamsByKey(teamKey);
         if (matches.length === 0) return { ok: false, message: `No team with key ${teamKey}.` };
         if (matches.length > 1) {
@@ -4649,29 +5008,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           return { ok: result.ok, message: result.message ?? "Unlinked." };
         }
         const thread = await threadIfAny(threadId);
-        const projectId = thread?.projectId ?? null;
-        if (projectId === null) {
-          return { ok: false, message: "This thread has no project, so no Linear scope can be established." };
-        }
-        const current = scopeFor(projectId, bindingSnapshot);
-        let issue = store.issue(identifier);
-        if (issue === null) {
-          issue = store
-            .issuesByIdentifier(identifier)
-            .find((entry) => current.readTeamIds.includes(entry.teamId)) ?? null;
-        }
-        if (issue === null) {
-          issue = await lifetime.runAsync(
-            "issue",
-            () => refreshIssue(identifier, current.readTeamIds),
-            null,
-          );
-        }
-        if (issue === null) return { ok: false, message: `No readable issue called ${identifier}.` };
-        const result = bindManually(threadId, issue.id, projectId);
+        const result = await linkThreadExplicit(
+          threadId,
+          identifier,
+          thread?.projectId ?? null,
+        );
         return {
           ok: result.ok,
-          message: result.message ?? `Linked this thread to ${issue.identifier}.`,
+          message: result.message ?? `Linked this thread to ${identifier}.`,
         };
       },
 
@@ -4895,7 +5239,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
        */
       threadIssue: (threadId) => {
         const cached = instructionCache.get(threadId);
-        if (cached !== undefined) return cached;
+        if (cached !== undefined) {
+          const alternates = alternatesByThread.get(threadId) ?? [];
+          if (alternates.length === 0) return cached;
+          const named = alternates
+            .map((entry) => safeIssueReference(entry.identifier, entry.issueId))
+            .join(", ");
+          return `${cached} The user's messages also named ${named} — the binding was NOT switched; use linear_thread_bind if one of those is the real subject.`;
+        }
         const suggestion = suggestions.get(threadId);
         if (suggestion !== undefined) {
           return `This thread is not bound to a Linear issue. Best guess by title: ${safeIssueReference(suggestion.identifier, suggestion.issueId)}. Bind it with linear_thread_bind if that is right.`;
@@ -4904,7 +5255,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       },
 
       bindThread: async (threadId, idOrIdentifier, projectId) =>
-        bindManually(threadId, idOrIdentifier, projectId),
+        linkThreadExplicit(threadId, idOrIdentifier, projectId),
 
       now,
     });
@@ -4957,6 +5308,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       if (changedCredentialSlots.length > 0) {
         cached = null;
         publish("linear:connection");
+        // A freshly pasted key's workspace loads now, not on the next manual
+        // `bb linear refresh` — that command must never be a prerequisite.
+        lastDiscoveryAttemptAt = now();
+        lifetime.detach("discover", async () => {
+          await discoverOnce();
+        });
       }
       const removedCredentialSlots = CREDENTIAL_SLOTS.filter((slot) => {
         const before = previous[slot]?.trim() ?? "";
@@ -5067,8 +5424,9 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       lifetime.detach("webhook-delete", () => run);
     });
 
-    const initial = initialSettings;
-    if (initial.apiKey === undefined || initial.apiKey.trim() === "") {
+    // Any configured slot counts. Checking only `apiKey` would mark a plugin
+    // whose sole key lives in slot 2 as unconfigured forever.
+    if (configuredSlots(initialSettings).length === 0) {
       bb.status.needsConfiguration(NEEDS_CONFIGURATION_MESSAGE);
     }
 

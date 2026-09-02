@@ -31,10 +31,14 @@ export const threadIssueSchema = z.object({
       url: z.string().nullable(),
       /** How the binding was made — shown so trust is inspectable. */
       origin: z.enum(["spawn", "manual", "branch", "message"]),
+      /** Which message or branch produced the binding, human-readable — e.g.
+       *  `the opening user message ("otto-2222")`. Null when the origin
+       *  carries its own story or the row predates provenance. */
+      provenance: z.string().nullable(),
       stateOptions: z.array(stateOptionSchema),
     })
     .nullable(),
-  /** The fuzzy rung's candidate, or null. Never set while bound. */
+  /** The suggestion rungs' candidate, or null. Never set while bound. */
   suggestion: z
     .object({
       issueId: z.string(),
@@ -42,6 +46,18 @@ export const threadIssueSchema = z.object({
       title: z.string(),
     })
     .nullable(),
+  /** Other in-scope issues the user's messages named. While bound these are
+   *  offered instead of silently re-binding; while unbound they trail the
+   *  primary suggestion. */
+  alternates: z
+    .array(
+      z.object({
+        issueId: z.string(),
+        identifier: z.string(),
+        title: z.string(),
+      }),
+    )
+    .default([]),
 });
 export type ThreadIssue = z.infer<typeof threadIssueSchema>;
 

@@ -187,6 +187,10 @@ export interface ThreadLinkRow {
   readonly projectId: string | null;
   readonly createdAt: number;
   readonly origin: ThreadLinkOrigin;
+  /** Which message or branch produced the binding, human-readable — e.g.
+   *  `the opening user message ("otto-2222")`. Null on rows written before
+   *  provenance existed, and on origins that carry their own story (spawn). */
+  readonly provenance?: string | null;
 }
 
 export interface InboxRowRecord {

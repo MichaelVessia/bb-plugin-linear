@@ -29,6 +29,33 @@ export interface SyncLine {
   readonly lastError: string | null;
 }
 
+/**
+ * One configured key slot, whatever state it is in.
+ *
+ * Every slot renders a line. The bug this shape fixes: `status` showed only
+ * whichever workspace verified first while `doctor` counted two keys — a
+ * mismatch that cost a session an hour of "which one is lying". A key that is
+ * set but whose workspace has not been read yet says exactly that, with the
+ * command that reads it.
+ */
+export interface WorkspaceStatusLine {
+  /** The settings slot's label, e.g. "Linear API key 2". */
+  readonly label: string;
+  /** Workspace identity, when the key has ever verified. */
+  readonly name: string | null;
+  readonly urlKey: string | null;
+  readonly viewerName: string | null;
+  /** "connected" | "checking" | a short problem description. */
+  readonly keyState: string;
+  /** Teams the mirror holds for this workspace. Null before discovery. */
+  readonly teams: number | null;
+  readonly issuesCached: number;
+  readonly projectsCached: number;
+  /** The bindings that resolve through this workspace's key,
+   *  as "project → TEAM" sentences. */
+  readonly bindings: readonly string[];
+}
+
 export interface StatusReport {
   readonly connection: ConnectionState;
   readonly now: number;
@@ -42,6 +69,9 @@ export interface StatusReport {
   readonly sync: SyncLine | null;
   readonly webhook: string | null;
   readonly writeRefusal: WriteRefusal | null;
+  /** Every configured key slot, one line each. Null keeps a report built by
+   *  an older caller rendering exactly as before. */
+  readonly workspaces?: readonly WorkspaceStatusLine[] | null;
 }
 
 function connectionHeadline(state: ConnectionState): string {
@@ -87,22 +117,58 @@ function bindingsLine(report: StatusReport): string {
   return unbound === "" ? bound.join(" · ") : `${bound.join(" · ")} · ${unbound}`;
 }
 
-function syncLineText(sync: SyncLine, now: number): string {
+function syncLineText(
+  sync: SyncLine,
+  now: number,
+  workspaces?: readonly WorkspaceStatusLine[] | null,
+): string {
   const cadence =
     sync.intervalMs === null
       ? `${sync.profile}`
       : `polling every ${Math.round(sync.intervalMs / 1000)}s`;
   const last =
     sync.lastTickAt === null ? "no tick yet" : `last tick ${formatRelativeCompact(sync.lastTickAt, now)} ago`;
-  const cached = `${sync.issues} ${pluralize(sync.issues, "issue", "issues")}, ${sync.projects} ${pluralize(sync.projects, "project", "projects")} cached`;
+  // A total across workspaces answers nothing — "whose 778 issues?" is the
+  // question that lost a session an hour. More than one workspace splits it.
+  const named = (workspaces ?? []).filter((line) => line.name !== null);
+  const split =
+    named.length > 1
+      ? ` (${named
+          .map((line) => `${line.name}: ${line.issuesCached}`)
+          .join(", ")})`
+      : "";
+  const cached = `${sync.issues} ${pluralize(sync.issues, "issue", "issues")}${split}, ${sync.projects} ${pluralize(sync.projects, "project", "projects")} cached`;
   return `${cadence} · ${last} · ${cached}`;
+}
+
+function workspaceLineText(line: WorkspaceStatusLine): string {
+  if (line.name === null) {
+    return `${line.label}: ${line.keyState}`;
+  }
+  const parts = [`${line.name} (${line.urlKey ?? "?"})`];
+  if (line.viewerName !== null) parts.push(`you: ${line.viewerName}`);
+  parts.push(`key ${line.keyState} (${line.label})`);
+  if (line.teams !== null) {
+    parts.push(`${line.teams} ${pluralize(line.teams, "team", "teams")}`);
+  }
+  parts.push(`${line.issuesCached} ${pluralize(line.issuesCached, "issue", "issues")} cached`);
+  if (line.bindings.length > 0) parts.push(line.bindings.join(" · "));
+  return parts.join(" · ");
 }
 
 export function renderStatus(report: StatusReport): string {
   const { connection, now } = report;
   const lines: (readonly [string, string])[] = [];
 
-  if (connection.kind === "connected") {
+  const workspaces = report.workspaces ?? null;
+  if (workspaces !== null && workspaces.length > 0) {
+    // Every configured workspace renders — a second key that is set but
+    // broken or unread is a line here, never an invisible fact `doctor`
+    // alone knows about.
+    for (const line of workspaces) {
+      lines.push(["Workspace", workspaceLineText(line)]);
+    }
+  } else if (connection.kind === "connected") {
     lines.push(["Workspace", `${connection.workspace.name} (${connection.workspace.urlKey})`]);
     lines.push(["You", connection.viewer.displayName]);
   }
@@ -113,7 +179,11 @@ export function renderStatus(report: StatusReport): string {
       : report.teamsVisible === null
         ? "set"
         : `set · ${report.teamsVisible} ${pluralize(report.teamsVisible, "team", "teams")} visible`;
-  lines.push(["Key", key]);
+  const keyCount = workspaces?.length ?? 0;
+  lines.push([
+    "Key",
+    keyCount > 1 ? `${keyCount} keys set, one per workspace · ${key}` : key,
+  ]);
 
   // The write line appears only once a write has actually come back refused.
   // Linear does not expose a key's scopes, so anything said before that would
@@ -126,7 +196,10 @@ export function renderStatus(report: StatusReport): string {
   }
 
   lines.push(["Bindings", bindingsLine(report)]);
-  lines.push(["Sync", report.sync === null ? "" : syncLineText(report.sync, now)]);
+  lines.push([
+    "Sync",
+    report.sync === null ? "" : syncLineText(report.sync, now, report.workspaces),
+  ]);
   lines.push(["Budget", budgetLine(connection)]);
   lines.push(["Webhook", report.webhook ?? ""]);
 

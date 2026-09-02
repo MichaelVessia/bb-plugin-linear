@@ -39,7 +39,7 @@ export function HeaderChip({ threadId }: { threadId: string; projectId: string |
         variant="ghost"
         className={`${toneClass(binding.tone)} h-7 gap-1.5 px-2 text-xs font-medium`}
         style={binding.glyph.color === null ? undefined : ({ "--bbl": binding.glyph.color } as CSSProperties)}
-        aria-label={`Linear issue ${binding.identifier} · ${binding.title} — ${binding.stateName}, bound via ${binding.origin}`}
+        aria-label={`Linear issue ${binding.identifier} · ${binding.title} — ${binding.stateName}, bound via ${binding.origin}${binding.provenance === null ? "" : ` — ${binding.provenance}`}`}
         onClick={() => {
           navigate.openThreadPanel({ actionId: "issue", title: binding.identifier });
         }}

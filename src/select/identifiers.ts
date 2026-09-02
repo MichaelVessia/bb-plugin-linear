@@ -21,18 +21,24 @@
  */
 
 /**
- * A Linear identifier: an uppercase team key, a hyphen, a number.
+ * A Linear identifier: a team key, a hyphen, a number.
  *
  * The key is 2–10 characters because Linear generates 3 and allows editing;
  * one character would match `A-1` in prose and every ordered list ever
  * written. Bounded digits for the same reason — `PAGE-1234567890123` is a
  * phone number, not an issue.
  *
+ * **Case-insensitive**, because people type `otto-2222` in chat far more often
+ * than they type `OTTO-2222` — the canonical form is what Linear renders, not
+ * what a person messages. Every match is uppercased before resolution, and the
+ * extra lowercase noise this admits (`mid-2020`, `top-10`) resolves to nothing
+ * exactly like the uppercase noise (`UTF-8`, `SHA-256`) always has.
+ *
  * Anchored on non-word boundaries at both ends so `SHENG-12` does not yield
  * `ENG-12`, which would open somebody else's issue from a word that merely
  * contains a team key.
  */
-const IDENTIFIER = /(?<![A-Za-z0-9])([A-Z][A-Z0-9]{1,9})-(\d{1,7})(?![A-Za-z0-9])/g;
+const IDENTIFIER = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,7})(?![A-Za-z0-9])/g;
 
 /**
  * A Linear issue URL, in either of the two shapes Linear itself produces:

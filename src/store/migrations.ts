@@ -769,4 +769,5 @@ export const MIGRATIONS: string[] = [
 
   `ALTER TABLE comment ADD COLUMN resolving_user_id TEXT`,
   `ALTER TABLE inbox ADD COLUMN comment_id TEXT`,
+  `ALTER TABLE thread_link ADD COLUMN provenance TEXT`,
 ];
