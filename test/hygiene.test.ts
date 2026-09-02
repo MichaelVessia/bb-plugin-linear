@@ -32,12 +32,12 @@ function relative(path: string): string {
 }
 
 describe("network egress census", () => {
-  it("src/ has exactly the two sanctioned fetch call sites", () => {
+  it("backend egress has exactly the sanctioned fetch call sites", () => {
     // Every Linear request must pass the transport (where the credential,
-    // the budget, the breaker and the write-consent gate live); the webhook
-    // self-test POSTs a signed nonce to the user's own URL. A third fetch is
-    // a path around all four protections.
-    const sanctioned = new Set(["src/linear/transport.ts"]);
+    // the budget, the breaker and the write-consent gate live); the upload
+    // image proxy is the sole exception: its local-auth route host-pins the
+    // URL, streams through a size cap, and supplies the issue owner's key.
+    const sanctioned = new Set(["src/image-proxy.ts", "src/linear/transport.ts"]);
     const callers = serverFiles
       .filter((path) => /\bfetch\s*\(|globalThis\.fetch/.test(readFileSync(path, "utf8")))
       .map(relative);

@@ -1,0 +1,98 @@
+import { describe, expect, it } from "vitest";
+import { detailViewSchema } from "../src/contract.js";
+import { selectDetail } from "../src/select/detail.js";
+import { issue, member, NOW, state, team } from "./helpers/store.js";
+
+describe("selectDetail pane parity", () => {
+  it("projects the widened contract entirely from mirror-shaped rows", () => {
+    const jane = member("u1", "Jane Doe", true);
+    const context = {
+      issue: {
+        ...issue({
+          id: "i1",
+          identifier: "ENG-1",
+          description:
+            "Ask @[Jane Doe](u1) ![shot](https://uploads.linear.app/shot.png)",
+          stateId: "s1",
+          creatorId: "u1",
+          parentId: "p1",
+          createdAt: NOW,
+        }),
+        syncedAt: NOW,
+      },
+      team: { ...team("team_eng", "ENG"), fetchedAt: NOW },
+      states: [state("s1", "team_eng", "started", 1, "Building")],
+      members: new Map([["u1", jane]]),
+      labels: new Map(),
+      priorityLabels: new Map([[0, "None"]]),
+      comments: [{
+        id: "c1",
+        issueId: "i1",
+        userId: "u1",
+        parentId: null,
+        body: "Hello @[Jane](u1)",
+        url: null,
+        createdAt: NOW + 20,
+        updatedAt: NOW + 20,
+        editedAt: null,
+        resolvedAt: NOW + 30,
+        resolvingUserId: "u1",
+      }],
+      commentsTruncated: true,
+      subIssues: [],
+      projectName: null,
+      cycleName: null,
+      milestoneName: null,
+      attachments: [{
+        id: "a1", issueId: "i1", title: "PR", subtitle: "#1", url: "https://example.com/pr",
+        sourceType: "github", groupBySource: true, createdAt: NOW + 10, updatedAt: NOW + 10,
+        creatorId: "u1",
+      }],
+      relations: [{
+        id: "r1", issueId: "p1", relatedIssueId: "i1", type: "blocks", inverse: true,
+        counterpartId: "p1", identifier: "ENG-0", title: "Parent blocker", stateId: "s1",
+        stateType: "started",
+      }],
+      history: [{
+        id: "h1:description", issueId: "i1", createdAt: NOW + 5, actorId: "u1", botName: null,
+        kind: "description", payload: {},
+      }],
+      reactions: [{
+        id: "rx1", issueId: "i1", commentId: null, emoji: "👍", userId: "u1", createdAt: NOW,
+      }, {
+        id: "rx2", issueId: "i1", commentId: "c1", emoji: "❤️", userId: "u1", createdAt: NOW,
+      }],
+      subscribers: [jane],
+      documents: [{ id: "d1", issueId: "i1", title: "Spec", url: "https://example.com/spec", updatedAt: NOW, icon: null, color: null }],
+      needs: [{ id: "n1", issueId: "i1", customerName: "Acme", priority: 2, body: "Needs this soon", url: null, createdAt: NOW }],
+      parent: { id: "p1", identifier: "ENG-0", title: "Parent", tone: "started" },
+      lastOpenedAt: NOW - 1,
+      showActivity: false,
+      viewerId: "u1",
+      cursors: { issueId: "i1", commentsCursor: "c", commentsMore: true, historyCursor: "h", historyMore: false, direction: "after" },
+      now: NOW + 60,
+      vocabulary: {
+        states: new Map([["s1", "Building"]]), members: new Map([["u1", "Jane Doe"]]),
+        priorities: new Map([[0, "None"]]), projects: new Map(), cycles: new Map(),
+        issues: new Map([["p1", "ENG-0"]]), labels: new Map(), teams: new Map(),
+        milestones: new Map(), estimationType: "notUsed",
+      },
+    };
+
+    const view = selectDetail(context as never);
+    expect(() => detailViewSchema.parse(view)).not.toThrow();
+    expect(view.description).toContain("**@Jane Doe**");
+    expect(view.description).toContain("/api/v1/plugins/linear/http/image?");
+    expect(view.parent?.identifier).toBe("ENG-0");
+    expect(view.resources.groups.map((group) => group.label)).toEqual(["GitHub", "Documents"]);
+    expect(view.relations.blockedBy[0]?.identifier).toBe("ENG-0");
+    expect(view.reactions[0]).toMatchObject({ emoji: "👍", count: 1, mine: true });
+    expect(view.comments[0]).toMatchObject({ resolved: true, resolvedBy: "Jane Doe" });
+    expect(view.comments[0]?.reactions[0]?.emoji).toBe("❤️");
+    expect(view.subscribers).toMatchObject({ count: 1 });
+    expect(view.customerRequests[0]).toMatchObject({ customer: "Acme", priority: 2 });
+    expect(view.timeline.map((entry) => entry.kind)).toEqual(["event", "event", "comment"]);
+    expect(view.unreadBoundaryAt).toBe(NOW - 1);
+    expect(view.activity).toEqual({ showActivity: false, hasOlder: true });
+  });
+});

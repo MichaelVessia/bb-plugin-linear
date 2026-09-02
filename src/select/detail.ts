@@ -5,8 +5,24 @@ import type {
   StateOption,
   SubIssueView,
 } from "../contract.js";
-import { formatTimelessDate, pluralize } from "../format.js";
-import type { CommentRow, LabelRow, MemberRow, TeamRow, WorkflowStateRow } from "../store/rows.js";
+import { formatActivityTime, formatDateTime, formatTimelessDate, pluralize, truncate } from "../format.js";
+import { rewriteLinearImages } from "../image-proxy.js";
+import { renderMentions } from "./mentions-markup.js";
+import { buildTimeline, nestComments, type TimelineVocabulary } from "./timeline.js";
+import type {
+  ActivityCursorRow,
+  AttachmentRow,
+  CommentRow,
+  CustomerNeedRow,
+  DocumentRow,
+  HistoryEventRow,
+  LabelRow,
+  MemberRow,
+  ReactionRow,
+  RelationDetailRow,
+  TeamRow,
+  WorkflowStateRow,
+} from "../store/rows.js";
 import type { IssueRow } from "../store/rows.js";
 import { toneForStateType, type Tone } from "./tone.js";
 
@@ -34,6 +50,23 @@ export interface DetailContext {
   readonly projectName: string | null;
   readonly cycleName: string | null;
   readonly milestoneName: string | null;
+  readonly attachments: readonly AttachmentRow[];
+  readonly relations: readonly RelationDetailRow[];
+  readonly history: readonly HistoryEventRow[];
+  readonly reactions: readonly ReactionRow[];
+  readonly subscribers: readonly MemberRow[];
+  /** How many subscribers Linear reported, which can exceed `subscribers`
+   *  when some belong to teams the mirror has never met. */
+  readonly subscriberCount?: number;
+  readonly documents: readonly DocumentRow[];
+  readonly needs: readonly CustomerNeedRow[];
+  readonly parent: { id: string; identifier: string; title: string; tone: Tone } | null;
+  readonly lastOpenedAt: number | null;
+  readonly showActivity: boolean;
+  readonly viewerId: string | null;
+  readonly cursors: ActivityCursorRow | null;
+  readonly now: number;
+  readonly vocabulary: TimelineVocabulary;
 }
 
 /** Linear's own grouping order for a state picker. */
@@ -170,12 +203,156 @@ export function selectDetail(context: DetailContext): DetailView {
     footnotes.push({ key: "creator", label: "Created by", value: creator.displayName });
   }
 
+  const reactionViews = (commentId: string | null) => {
+    const grouped = new Map<string, ReactionRow[]>();
+    for (const reaction of context.reactions) {
+      if (reaction.commentId !== commentId) continue;
+      grouped.set(reaction.emoji, [...(grouped.get(reaction.emoji) ?? []), reaction]);
+    }
+    return [...grouped.entries()].map(([emoji, rows]) => ({
+      emoji,
+      count: rows.length,
+      mine: context.viewerId !== null && rows.some((row) => row.userId === context.viewerId),
+      ids: rows.map((row) => row.id),
+    }));
+  };
+
+  const markdown = (value: string): string =>
+    renderMentions(rewriteLinearImages(value, issue.id));
+  const flatComments = context.comments.map((comment) => {
+    const author = comment.userId === null ? undefined : context.members.get(comment.userId);
+    const name = author?.displayName ?? "Someone";
+    const resolvedBy =
+      comment.resolvingUserId === null || comment.resolvingUserId === undefined
+        ? null
+        : (context.members.get(comment.resolvingUserId)?.displayName ?? null);
+    return {
+      id: comment.id,
+      body: markdown(comment.body),
+      author: name,
+      authorInitials: initials(name),
+      avatarUrl: author?.avatarUrl ?? null,
+      createdAt: comment.createdAt,
+      createdAtRelative:
+        comment.createdAt === null ? null : formatActivityTime(comment.createdAt, context.now),
+      createdAtAbsolute:
+        comment.createdAt === null ? null : formatDateTime(comment.createdAt),
+      edited: comment.editedAt !== null,
+      parentId: comment.parentId,
+      url: comment.url,
+      resolved: comment.resolvedAt !== null,
+      resolvedBy,
+      reactions: reactionViews(comment.id),
+    };
+  });
+  const comments = nestComments(flatComments);
+
+  const resourcesBySource = new Map<
+    string,
+    { source: string; label: string; newest: number; items: DetailView["resources"]["groups"][number]["items"] }
+  >();
+  const sourceLabel = (source: string): string =>
+    source === "links"
+      ? "Links"
+      : source.toLowerCase() === "github"
+        ? "GitHub"
+      : source.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  for (const attachment of context.attachments) {
+    const plainLink =
+      attachment.sourceType === null ||
+      attachment.sourceType === "" ||
+      attachment.sourceType.toLowerCase() === "url" ||
+      attachment.sourceType.toLowerCase() === "link";
+    const source =
+      attachment.groupBySource && !plainLink
+        ? attachment.sourceType
+        : "links";
+    const existing = resourcesBySource.get(source) ?? {
+      source,
+      label: sourceLabel(source),
+      newest: 0,
+      items: [],
+    };
+    existing.newest = Math.max(existing.newest, attachment.createdAt ?? 0);
+    existing.items.push({
+      id: attachment.id,
+      title: attachment.title,
+      subtitle: attachment.subtitle,
+      url: attachment.url,
+      createdAt: attachment.createdAt,
+      kind: "attachment",
+    });
+    resourcesBySource.set(source, existing);
+  }
+  if (context.documents.length > 0) {
+    resourcesBySource.set("documents", {
+      source: "documents",
+      label: "Documents",
+      newest: Math.max(...context.documents.map((document) => document.updatedAt ?? 0)),
+      items: context.documents.map((document) => ({
+        id: document.id,
+        title: document.title,
+        subtitle: null,
+        url: document.url,
+        createdAt: document.updatedAt,
+        kind: "document" as const,
+      })),
+    });
+  }
+  const resources = {
+    groups: [...resourcesBySource.values()]
+      .sort((a, b) => b.newest - a.newest || a.label.localeCompare(b.label))
+      .map(({ source, label, items }) => ({
+        source,
+        label,
+        items: [...items].sort(
+          (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || a.title.localeCompare(b.title),
+        ),
+      })),
+  };
+
+  const emptyRelations: DetailView["relations"] = {
+    blockedBy: [],
+    blocks: [],
+    related: [],
+    duplicateOf: [],
+    duplicates: [],
+  };
+  for (const relation of context.relations) {
+    const item = {
+      relationId: relation.id,
+      id: relation.counterpartId,
+      identifier: relation.identifier ?? relation.counterpartId,
+      title: relation.title ?? "Unknown issue",
+      tone: toneForStateType(relation.stateType),
+      done: relation.stateType === "completed" || relation.stateType === "canceled",
+    };
+    if (relation.type === "blocks") {
+      (relation.inverse ? emptyRelations.blockedBy : emptyRelations.blocks).push(item);
+    } else if (relation.type === "duplicate") {
+      (relation.inverse ? emptyRelations.duplicates : emptyRelations.duplicateOf).push(item);
+    } else {
+      emptyRelations.related.push(item);
+    }
+  }
+
+  const timeline = buildTimeline({
+    issueId: issue.id,
+    createdAt: issue.createdAt,
+    creatorId: issue.creatorId,
+    comments,
+    events: context.history,
+    members: context.members,
+    vocab: context.vocabulary,
+    now: context.now,
+  });
+
   return {
     id: issue.id,
     identifier: issue.identifier,
     title: issue.title,
     url: issue.url,
-    description: issue.description,
+    description: issue.description === null ? null : markdown(issue.description),
     stateId: issue.stateId,
     stateName: state?.name ?? "Unknown state",
     tone,
@@ -205,22 +382,34 @@ export function selectDetail(context: DetailContext): DetailView {
       tone: toneForStateType(child.type),
       done: child.type === "completed" || child.type === "canceled",
     })),
-    comments: context.comments.map((comment) => {
-      const author = comment.userId === null ? undefined : context.members.get(comment.userId);
-      const name = author?.displayName ?? "Someone";
-      return {
-        id: comment.id,
-        body: comment.body,
-        author: name,
-        authorInitials: initials(name),
-        avatarUrl: author?.avatarUrl ?? null,
-        createdAt: comment.createdAt,
-        edited: comment.editedAt !== null,
-        parentId: comment.parentId,
-        url: comment.url,
-      };
-    }),
+    parent: context.parent,
+    resources,
+    relations: emptyRelations,
+    reactions: reactionViews(null),
+    comments,
     commentsTruncated: context.commentsTruncated,
+    subscribers: {
+      count: Math.max(context.subscriberCount ?? 0, context.subscribers.length),
+      people: context.subscribers.map((member) => ({
+        id: member.id,
+        displayName: member.displayName,
+        initials: initials(member.displayName),
+        avatarUrl: member.avatarUrl,
+      })),
+    },
+    customerRequests: context.needs.map((need) => ({
+      id: need.id,
+      customer: need.customerName ?? "Unknown customer",
+      priority: need.priority,
+      excerpt: truncate((need.body ?? "").replace(/\s+/g, " ").trim(), 180),
+      url: need.url,
+    })),
+    timeline,
+    unreadBoundaryAt: context.lastOpenedAt,
+    activity: {
+      showActivity: context.showActivity,
+      hasOlder: context.cursors?.commentsMore === true || context.cursors?.historyMore === true,
+    },
     footnotes,
     teamKey: context.team?.key ?? "",
     teamName: context.team?.name ?? "",

@@ -62,6 +62,7 @@ export interface InboxItemView {
   readonly text: string;
   readonly identifier: string | null;
   readonly issueId: string | null;
+  readonly commentId: string | null;
   readonly url: string | null;
   /** Set only when more than one workspace is connected. */
   readonly workspace: string | null;
@@ -132,6 +133,7 @@ export function selectInboxItem(input: {
     text,
     identifier: input.issue?.identifier ?? null,
     issueId: input.row.issueId,
+    commentId: input.row.commentId,
     url: input.row.url,
     workspace: input.workspace ?? null,
     age: formatRelativeCompact(input.row.createdAt, input.now),

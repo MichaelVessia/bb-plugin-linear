@@ -85,6 +85,8 @@ export const serverRpcContract = defineRpcContract({
    * add/remove label discipline (never a replacement set).
    */
   issue: legacyContract.issue,
+  setActivityVisibility: legacyContract.setActivityVisibility,
+  olderActivity: legacyContract.olderActivity,
   updateIssue: legacyContract.updateIssue,
   editorOptions: legacyContract.editorOptions,
   comment: legacyContract.comment,

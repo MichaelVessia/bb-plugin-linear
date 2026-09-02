@@ -123,6 +123,16 @@ export function formatDateTime(epochMs: number): string {
   }).format(epochMs);
 }
 
+/**
+ * Linear's activity timestamp grammar: recent events read relatively, while
+ * older ones settle into a short calendar date. Seven days is the handoff
+ * because "last week" is less useful in a history ledger than the date is.
+ */
+export function formatActivityTime(epochMs: number, now: number): string {
+  if (Math.abs(now - epochMs) < WEEK) return formatRelative(epochMs, now);
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "short" }).format(epochMs);
+}
+
 /* ────────────────────────────────────────────────────────────────────────── */
 /* Calendar dates                                                             */
 /* ────────────────────────────────────────────────────────────────────────── */

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   IssueDetailNode,
   IssueHistoryNode,
@@ -203,6 +203,37 @@ function detailNode(): IssueDetailNode {
 }
 
 describe("applyIssueDetail", () => {
+  it("checks newest-first ordering and avoids tick-style double writes", () => {
+    const store = createTestStore();
+    store.putTeams([team("team_eng", "ENG")], NOW);
+    const mergeAttachments = vi.spyOn(store, "mergeAttachments");
+    const mergeRelations = vi.spyOn(store, "mergeRelations");
+    const debug = vi.fn();
+    const detail = detailNode();
+    const firstComment = detail.comments.nodes[0]!;
+    const firstHistory = detail.history.nodes[0]!;
+    applyIssueDetail(store, {
+      ...detail,
+      comments: {
+        ...detail.comments,
+        nodes: [
+          { ...firstComment, createdAt: "2026-01-01T00:00:00.000Z" },
+          { ...firstComment, id: "c2", createdAt: "2026-01-02T00:00:00.000Z" },
+        ],
+      },
+      history: {
+        ...detail.history,
+        nodes: [
+          { ...firstHistory, createdAt: "2026-01-01T00:00:00.000Z" },
+          { ...firstHistory, id: "h2", createdAt: "2026-01-02T00:00:00.000Z" },
+        ],
+      },
+    }, NOW, { debug });
+    expect(debug).toHaveBeenCalledTimes(2);
+    expect(mergeAttachments).not.toHaveBeenCalled();
+    expect(mergeRelations).not.toHaveBeenCalled();
+  });
+
   it("writes every pane table, reconciles the fetched comment window, and stores cursors", () => {
     const store = createTestStore();
     store.putComments([
@@ -532,6 +563,30 @@ describe("applyIssueDetail", () => {
       "ir1",
       "older-comment-reaction",
     ]);
+  });
+
+  it("keeps a deeper activity cursor across newest-page detail refreshes", () => {
+    const store = createTestStore();
+    applyIssueDetail(store, detailNode(), NOW);
+    store.putActivityCursor({
+      issueId: "i1",
+      commentsCursor: "comments-deeper",
+      commentsMore: false,
+      historyCursor: "history-deeper",
+      historyMore: true,
+      direction: "after",
+    });
+
+    applyIssueDetail(store, detailNode(), NOW + 1);
+
+    expect(store.activityCursor("i1")).toEqual({
+      issueId: "i1",
+      commentsCursor: "comments-deeper",
+      commentsMore: false,
+      historyCursor: "history-deeper",
+      historyMore: true,
+      direction: "after",
+    });
   });
 
   it("removes stale comments when the fetched activity window is completely empty", () => {

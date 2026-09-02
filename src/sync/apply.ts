@@ -3,6 +3,7 @@ import type {
   BootstrapResult,
   BreadthResult,
   IssueRelationsResult,
+  IssueActivityPageResult,
   IssueDetailNode,
   IssueHistoryNode,
   IssueNode,
@@ -308,7 +309,73 @@ export function applyIssues(
  * detail pane reads all three and a pane that renders the issue and then the
  * comments a beat later reads as slow even when it is not.
  */
-export function applyIssueDetail(store: Store, node: IssueDetailNode, at: number): void {
+export interface ApplyActivityOptions {
+  readonly debug?: (message: string) => void;
+  /** Older paging advances each lane independently. An exhausted comments
+   * lane still appears in the shared document but must not reconcile an empty
+   * refetch over every comment already mirrored. */
+  readonly commentsActive?: boolean;
+  readonly historyActive?: boolean;
+}
+
+function verifyNewestFirst(
+  lane: "comments" | "history",
+  nodes: readonly { readonly createdAt: string }[],
+  debug?: (message: string) => void,
+): void {
+  if (nodes.length < 2 || debug === undefined) return;
+  const first = parseInstant(nodes[0]!.createdAt);
+  const last = parseInstant(nodes[nodes.length - 1]!.createdAt);
+  if (first !== null && last !== null && first < last) {
+    debug(`Linear ${lane} page was not newest-first; preserving client-side chronological order.`);
+  }
+}
+
+function commentRows(issueId: string, nodes: IssueDetailNode["comments"]["nodes"], at: number): CommentRow[] {
+  return nodes.map((comment) => ({
+    id: comment.id,
+    issueId: comment.issue?.id ?? issueId,
+    userId: comment.user?.id ?? null,
+    parentId: comment.parent?.id ?? null,
+    body: comment.body,
+    url: comment.url,
+    createdAt: parseInstant(comment.createdAt),
+    updatedAt: parseInstant(comment.updatedAt) ?? at,
+    editedAt: parseInstant(comment.editedAt),
+    resolvedAt: parseInstant(comment.resolvedAt),
+    resolvingUserId: comment.resolvingUser?.id ?? null,
+  }));
+}
+
+function reconcileCommentPage(
+  store: Store,
+  issueId: string,
+  comments: readonly CommentRow[],
+  hasOlder: boolean,
+  reconcileEmptyCompleteWindow = true,
+): void {
+  const commentTimes = comments
+    .map((comment) => comment.createdAt)
+    .filter((value): value is number => value !== null);
+  if (commentTimes.length > 0) {
+    store.reconcileCommentsWindow(
+      issueId,
+      comments.map((comment) => comment.id),
+      hasOlder ? Math.min(...commentTimes) : null,
+      Math.max(...commentTimes),
+    );
+  } else if (!hasOlder && reconcileEmptyCompleteWindow) {
+    store.reconcileCommentsWindow(issueId, [], null, null);
+  }
+}
+
+export function applyIssueDetail(
+  store: Store,
+  node: IssueDetailNode,
+  at: number,
+  options: ApplyActivityOptions = {},
+): void {
+  const previousCursor = store.activityCursor(node.id);
   // A child that is **already in the mirror** is left alone. The detail query
   // returns four fields per child, and upserting that over a full row would
   // blank every other column until the poller happened to touch it again —
@@ -321,7 +388,11 @@ export function applyIssueDetail(store: Store, node: IssueDetailNode, at: number
     .filter((child) => !existingChildren.has(child.id))
     .map((child) => detailChildToNode(child, node));
 
-  applyIssues(store, [node, ...stubs], at);
+  // The detail node is structurally also a tick node. Strip tick-only
+  // connections before the shared issue write so attachments and relations
+  // are written exactly once by the authoritative replace-all path below.
+  const { attachments: _attachments, relations: _relations, inverseRelations: _inverse, ...baseNode } = node;
+  applyIssues(store, [baseNode, ...stubs], at);
 
   // Parent and relation rows are expanded just enough to make the joined
   // store readers useful before the ordinary poller reaches those issues.
@@ -391,39 +462,11 @@ export function applyIssueDetail(store: Store, node: IssueDetailNode, at: number
     at,
   );
 
-  const comments: CommentRow[] = node.comments.nodes.map((comment) => ({
-    id: comment.id,
-    issueId: comment.issue?.id ?? node.id,
-    userId: comment.user?.id ?? null,
-    parentId: comment.parent?.id ?? null,
-    body: comment.body,
-    url: comment.url,
-    createdAt: parseInstant(comment.createdAt),
-    updatedAt: parseInstant(comment.updatedAt) ?? at,
-    editedAt: parseInstant(comment.editedAt),
-    resolvedAt: parseInstant(comment.resolvedAt),
-    resolvingUserId: comment.resolvingUser?.id ?? null,
-  }));
+  verifyNewestFirst("comments", node.comments.nodes, options.debug);
+  verifyNewestFirst("history", node.history.nodes, options.debug);
+  const comments = commentRows(node.id, node.comments.nodes, at);
   store.putComments(comments);
-
-  const commentTimes = comments
-    .map((comment) => comment.createdAt)
-    .filter((value): value is number => value !== null);
-  if (commentTimes.length > 0) {
-    store.reconcileCommentsWindow(
-      node.id,
-      comments.map((comment) => comment.id),
-      node.comments.pageInfo.hasNextPage === false ? null : Math.min(...commentTimes),
-      Math.max(...commentTimes),
-    );
-  } else if (
-    node.comments.pageInfo.hasNextPage === false
-  ) {
-    // An empty, complete window means the issue has no comments. With no
-    // timestamps to bound the window, null/null deliberately covers all of
-    // this issue and removes comments deleted since the previous refresh.
-    store.reconcileCommentsWindow(node.id, [], null, null);
-  }
+  reconcileCommentPage(store, node.id, comments, node.comments.pageInfo.hasNextPage);
 
   store.replaceAttachments(node.id, toAttachmentRows(node.id, node.attachments.nodes));
   store.replaceRelations(
@@ -477,10 +520,85 @@ export function applyIssueDetail(store: Store, node: IssueDetailNode, at: number
   );
   store.putActivityCursor({
     issueId: node.id,
-    commentsCursor: node.comments.pageInfo.endCursor ?? null,
-    commentsMore: node.comments.pageInfo.hasNextPage,
-    historyCursor: node.history.pageInfo.endCursor ?? null,
-    historyMore: node.history.pageInfo.hasNextPage,
+    // A detail refresh is always the newest page. Once the user has advanced
+    // an older-page cursor, retain that progress; the refreshed first page has
+    // already merged any newly-created activity into the mirror. A now-complete
+    // first page remains authoritative and clears stale paging state.
+    commentsCursor:
+      node.comments.pageInfo.hasNextPage && previousCursor !== null
+        ? previousCursor.commentsCursor
+        : (node.comments.pageInfo.endCursor ?? null),
+    commentsMore:
+      node.comments.pageInfo.hasNextPage && previousCursor !== null
+        ? previousCursor.commentsMore
+        : node.comments.pageInfo.hasNextPage,
+    historyCursor:
+      node.history.pageInfo.hasNextPage && previousCursor !== null
+        ? previousCursor.historyCursor
+        : (node.history.pageInfo.endCursor ?? null),
+    historyMore:
+      node.history.pageInfo.hasNextPage && previousCursor !== null
+        ? previousCursor.historyMore
+        : node.history.pageInfo.hasNextPage,
+    direction: "after",
+  });
+}
+
+/** Merge one older activity page and advance each lane's independent cursor. */
+export function applyIssueActivityPage(
+  store: Store,
+  result: IssueActivityPageResult,
+  at: number,
+  options: ApplyActivityOptions = {},
+): void {
+  const { issue } = result;
+  const previous = store.activityCursor(issue.id);
+  const commentsActive = options.commentsActive ?? true;
+  const historyActive = options.historyActive ?? true;
+  if (commentsActive) {
+    verifyNewestFirst("comments", issue.comments.nodes, options.debug);
+    const comments = commentRows(issue.id, issue.comments.nodes, at);
+    store.putComments(comments);
+    // An empty `after:` page means there is nothing older. It says nothing
+    // about the already-mirrored newest window and must never reconcile the
+    // whole issue to empty.
+    reconcileCommentPage(store, issue.id, comments, issue.comments.pageInfo.hasNextPage, false);
+    const issueReactions = store
+      .reactionsFor(issue.id)
+      .filter((reaction) => reaction.commentId === null);
+    store.replaceReactions(
+      issue.id,
+      [
+        ...issueReactions,
+        ...issue.comments.nodes.flatMap((comment) =>
+          toReactionRows(issue.id, comment.id, comment.reactions ?? []),
+        ),
+      ],
+      issue.comments.nodes.map((comment) => comment.id),
+    );
+  }
+  if (historyActive) {
+    verifyNewestFirst("history", issue.history.nodes, options.debug);
+    store.putHistory(
+      [...issue.history.nodes]
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        .flatMap((history) => historyRowsFor(issue.id, history)),
+    );
+  }
+  store.putActivityCursor({
+    issueId: issue.id,
+    commentsCursor: commentsActive
+      ? (issue.comments.pageInfo.endCursor ?? null)
+      : (previous?.commentsCursor ?? null),
+    commentsMore: commentsActive
+      ? issue.comments.pageInfo.hasNextPage
+      : (previous?.commentsMore ?? false),
+    historyCursor: historyActive
+      ? (issue.history.pageInfo.endCursor ?? null)
+      : (previous?.historyCursor ?? null),
+    historyMore: historyActive
+      ? issue.history.pageInfo.hasNextPage
+      : (previous?.historyMore ?? false),
     direction: "after",
   });
 }

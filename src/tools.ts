@@ -14,6 +14,7 @@ import {
 } from "./mutations.js";
 import type { AgentWrites } from "./settings.js";
 import { UNTRUSTED_LINEAR_POLICY } from "./security-boundaries.js";
+import { describeEvent, type TimelineVocabulary } from "./select/timeline.js";
 import type { BindingRow, IssueRow, TeamRow } from "./store/rows.js";
 import type { Store } from "./store/store.js";
 import {
@@ -401,6 +402,11 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
       "Read one Linear issue in full: its state, properties, description, sub-issues and recent comments.",
     parameters: z.object({
       issue: z.string().min(1).describe("An identifier such as ENG-42, or an issue id."),
+      include_activity: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Include up to 30 recent non-comment activity events. Defaults to false."),
     }),
     presentation: {
       label: {
@@ -408,21 +414,101 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
         completed: "Read a Linear issue",
       },
     },
-    execute: async ({ issue }, ctx) => {
+    execute: async ({ issue, include_activity }, ctx) => {
       const current = scope(ctx.projectId);
       const row = await resolveIssue(current, issue, "read", ctx.signal);
       const children = deps.store.childIssues(row.id, 50);
       const comments = deps.store.comments(row.id);
+      const history = include_activity ? deps.store.historyFor(row.id, { limit: 30 }) : [];
+      const historyIds = (kind: string): string[] =>
+        history
+          .filter((event) => event.kind === kind)
+          .flatMap((event) => [event.payload.from, event.payload.to])
+          .filter((value): value is string => typeof value === "string");
       const issueContext = context(
         [row.teamId],
         [row],
         comments
           .map((comment) => comment.userId)
-          .filter((id): id is string => id !== null),
+          .filter((id): id is string => id !== null)
+          .concat(history.map((event) => event.actorId).filter((id): id is string => id !== null))
+          .concat(historyIds("assignee"))
+          .concat(row.creatorId === null ? [] : [row.creatorId]),
       );
       const states = issueContext.states;
+      const parent = row.parentId === null ? null : deps.store.issue(row.parentId);
+      const named = <T extends { id: string }>(
+        ids: readonly string[],
+        read: (id: string) => T | null,
+        label: (row: T) => string,
+      ): Map<string, string> => new Map(
+        [...new Set(ids)].flatMap((id) => {
+          const found = read(id);
+          return found === null ? [] : [[id, label(found)] as const];
+        }),
+      );
+      const vocab: TimelineVocabulary = {
+        states: new Map([...issueContext.states].map(([id, value]) => [id, value.name])),
+        members: new Map([...issueContext.members].map(([id, value]) => [id, value.displayName])),
+        priorities: issueContext.priorityLabels,
+        projects: named(
+          [...historyIds("project"), ...(row.projectId === null ? [] : [row.projectId])],
+          (id) => deps.store.project(id),
+          (project) => project.name,
+        ),
+        cycles: named(
+          [...historyIds("cycle"), ...(row.cycleId === null ? [] : [row.cycleId])],
+          (id) => deps.store.cycle(id),
+          (cycle) => cycle.name ?? `Cycle ${cycle.number}`,
+        ),
+        issues: new Map(
+          [parent, ...deps.store.relationsFor(row.id).map((relation) => deps.store.issue(relation.counterpartId))]
+            .filter((entry): entry is IssueRow => entry !== null)
+            .map((entry) => [entry.id, entry.identifier]),
+        ),
+        labels: new Map([...issueContext.labels].map(([id, value]) => [id, value.name])),
+        teams: named(
+          [row.teamId, ...historyIds("team")],
+          (id) => deps.store.team(id),
+          (team) => team.name,
+        ),
+        milestones: named(
+          [...historyIds("milestone"), ...(row.milestoneId === null ? [] : [row.milestoneId])],
+          (id) => deps.store.milestone(id),
+          (milestone) => milestone.name,
+        ),
+        estimationType: issueContext.teams.get(row.teamId)?.estimationType ?? "notUsed",
+      };
       return issueDetailText(row, issueContext, {
         comments,
+        parent: parent === null ? null : { identifier: parent.identifier, title: parent.title },
+        attachments: deps.store.attachmentsFor(row.id),
+        documents: deps.store.documentsFor(row.id),
+        relations: deps.store.relationsFor(row.id),
+        ...(include_activity
+          ? {
+              activity: [
+                ...(history.length < 30
+                  ? [{
+                      at: row.createdAt ?? row.updatedAt,
+                      actor:
+                        row.creatorId === null
+                          ? "Linear"
+                          : (issueContext.members.get(row.creatorId)?.displayName ?? "Someone"),
+                      text: describeEvent({ kind: "created", payload: {} }, vocab),
+                    }]
+                  : []),
+                ...history.map((event) => ({
+                  at: event.createdAt,
+                  actor:
+                    event.actorId === null
+                      ? (event.botName ?? "Linear")
+                      : (issueContext.members.get(event.actorId)?.displayName ?? "Someone"),
+                  text: describeEvent(event, vocab),
+                })),
+              ],
+            }
+          : {}),
         subIssues: children.map((child) => {
           const type = child.stateId === null ? "" : (states.get(child.stateId)?.type ?? "");
           return {

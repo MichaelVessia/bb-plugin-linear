@@ -1,7 +1,10 @@
-import { formatTimelessDate, pluralize, truncate } from "./format.js";
+import { formatDateTime, formatTimelessDate, pluralize, truncate } from "./format.js";
 import { formatEstimate } from "./select/detail.js";
 import type {
   CommentRow,
+  AttachmentRow,
+  DocumentRow,
+  RelationDetailRow,
   IssueRow,
   LabelRow,
   MemberRow,
@@ -47,6 +50,15 @@ export function issueDetailText(
   extras: {
     readonly comments?: readonly CommentRow[];
     readonly subIssues?: readonly { identifier: string; title: string; done: boolean }[];
+    readonly parent?: { identifier: string; title: string } | null;
+    readonly attachments?: readonly AttachmentRow[];
+    readonly documents?: readonly DocumentRow[];
+    readonly relations?: readonly RelationDetailRow[];
+    readonly activity?: readonly {
+      readonly at: number;
+      readonly actor: string;
+      readonly text: string;
+    }[];
   } = {},
 ): string {
   const state = issue.stateId === null ? undefined : context.states.get(issue.stateId);
@@ -77,6 +89,49 @@ export function issueDetailText(
     lines.push(`Description:\n${issue.description.trim()}`);
   }
 
+  if (extras.parent !== undefined && extras.parent !== null) {
+    lines.push(`Parent: ${extras.parent.identifier} — ${extras.parent.title}`);
+  }
+
+  const resources = [
+    ...(extras.attachments ?? []).map((item) => ({
+      title: item.title,
+      subtitle: item.subtitle,
+      url: item.url,
+    })),
+    ...(extras.documents ?? []).map((item) => ({
+      title: item.title,
+      subtitle: null,
+      url: item.url,
+    })),
+  ];
+  if (resources.length > 0) {
+    lines.push(
+      `Resources:\n${resources
+        .map((item) =>
+          `  ${[item.title, item.subtitle, item.url].filter((part) => part !== null && part !== "").join(" — ")}`,
+        )
+        .join("\n")}`,
+    );
+  }
+
+  const relations = extras.relations ?? [];
+  if (relations.length > 0) {
+    lines.push(
+      `Relations:\n${relations
+        .map((relation) => {
+          const label =
+            relation.type === "blocks"
+              ? relation.inverse ? "blocked by" : "blocks"
+              : relation.type === "duplicate"
+                ? relation.inverse ? "duplicates" : "duplicate of"
+                : "related";
+          return `  ${label}: ${relation.identifier ?? relation.counterpartId} — ${relation.title ?? "Unknown issue"}`;
+        })
+        .join("\n")}`,
+    );
+  }
+
   const subIssues = extras.subIssues ?? [];
   if (subIssues.length > 0) {
     const done = subIssues.filter((child) => child.done).length;
@@ -98,6 +153,15 @@ export function issueDetailText(
               : (context.members.get(comment.userId)?.displayName ?? "Someone");
           return `  ${author}: ${truncate(comment.body.replace(/\s+/g, " "), 400)}`;
         })
+        .join("\n")}`,
+    );
+  }
+
+  const activity = (extras.activity ?? []).slice(-30);
+  if (activity.length > 0) {
+    lines.push(
+      `Activity (last ${activity.length}):\n${activity
+        .map((entry) => `  ${formatDateTime(entry.at)} — ${entry.actor}: ${entry.text}`)
         .join("\n")}`,
     );
   }

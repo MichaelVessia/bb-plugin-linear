@@ -8,6 +8,7 @@ import {
   DOCUMENT_PAGE_SIZE,
   HISTORY_PAGE_SIZE,
   ISSUE_DETAIL,
+  ISSUE_ACTIVITY_PAGE,
   ISSUE_UPDATE,
   ISSUES_BACKFILL,
   ISSUES_EXIST,
@@ -65,6 +66,7 @@ import type {
   IssueRelationsResult,
   CommentCreateResult,
   IssueDetailResult,
+  IssueActivityPageResult,
   IssuesResult,
   IssueUpdateResult,
   TeamGraphResult,
@@ -142,6 +144,13 @@ export interface LinearClient {
    *  nobody exercises until it matters — cannot drift from the one that is
    *  exercised constantly. */
   issueDetail(id: string, options?: CallOptions): Promise<IssueDetailResult>;
+
+  /** One older page for each independently-cursored activity lane. */
+  issueActivityPage(
+    id: string,
+    cursors: { commentsAfter: string | null; historyAfter: string | null },
+    options?: CallOptions,
+  ): Promise<IssueActivityPageResult>;
 
   /** Patch an issue. `input` is built by `buildIssueUpdateInput`, which never
    *  emits `labelIds`. */
@@ -314,6 +323,18 @@ export const createLinearClient: LinearClientFactory = (session, options) => {
           subscribers: SUBSCRIBER_PAGE_SIZE,
           documents: DOCUMENT_PAGE_SIZE,
           needs: CUSTOMER_NEED_PAGE_SIZE,
+        }),
+      ),
+
+    issueActivityPage: (id, cursors, callOptions) =>
+      transport.execute<IssueActivityPageResult>(
+        ISSUE_ACTIVITY_PAGE,
+        call(callOptions, {
+          id,
+          comments: COMMENT_PAGE_SIZE,
+          commentsAfter: cursors.commentsAfter,
+          history: HISTORY_PAGE_SIZE,
+          historyAfter: cursors.historyAfter,
         }),
       ),
 

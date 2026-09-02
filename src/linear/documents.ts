@@ -1435,6 +1435,11 @@ export const ATTACHMENT_LINK = doc(
       title
       subtitle
       url
+      sourceType
+      groupBySource
+      createdAt
+      updatedAt
+      creator { id }
     }
   }
 }`,

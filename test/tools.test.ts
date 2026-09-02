@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { issueNeedsRefresh, registerTools } from "../src/tools.js";
-import { createTestStore, issue, NOW, team } from "./helpers/store.js";
+import { createTestStore, issue, member, NOW, team } from "./helpers/store.js";
 
 describe("agent issue resolution", () => {
   it("refreshes detached parent and relation placeholders before returning detail", () => {
@@ -64,5 +64,46 @@ describe("agent issue resolution", () => {
     expect(refreshIssue).toHaveBeenCalledWith("ENG-9", ["team_eng"], undefined);
     expect(result).toContain("Hydrated issue");
     expect(result).toContain("Full description");
+  });
+
+  it("adds mirrored resources, relations and parent while activity stays opt-in and bounded", async () => {
+    const store = createTestStore();
+    store.putTeams([team("team_eng", "ENG")], NOW);
+    store.putIssues([
+      issue({ id: "parent", identifier: "ENG-1", title: "Parent" }),
+      issue({ id: "main", identifier: "ENG-2", title: "Main", parentId: "parent" }),
+      issue({ id: "blocker", identifier: "ENG-3", title: "Blocker" }),
+    ], NOW);
+    store.putMembers([member("u_history", "Pat Assignee")]);
+    store.mergeAttachments([{ id: "a1", issueId: "main", title: "PR", subtitle: "#12", url: "https://example.com/pr", sourceType: "github", groupBySource: true, createdAt: NOW, updatedAt: NOW, creatorId: null }]);
+    store.replaceDocuments("main", [{ id: "d1", issueId: "main", title: "Spec", url: "https://example.com/spec", updatedAt: NOW, icon: null, color: null }]);
+    store.mergeRelations([{ id: "r1", issueId: "blocker", relatedIssueId: "main", type: "blocks" }]);
+    store.putHistory(Array.from({ length: 35 }, (_, index) => ({
+      id: `h${index}:description`, issueId: "main", createdAt: NOW + index,
+      actorId: null,
+      botName: null,
+      ...(index === 34
+        ? { kind: "assignee" as const, payload: { from: null, to: "u_history" } }
+        : { kind: "description" as const, payload: {} }),
+    })));
+    const registered: Array<{ name: string; execute: (...args: any[]) => unknown }> = [];
+    registerTools({ agents: { registerTool: (tool: any) => registered.push(tool), configure: () => {} } } as never, {
+      store,
+      bindings: () => [{ projectId: "project", teamId: "team_eng", role: "primary", boundAt: NOW, origin: "manual" }],
+      refreshIssue: vi.fn(),
+    } as never);
+    const tool = registered.find((entry) => entry.name === "linear_issue_get")!;
+    const quiet = await tool.execute({ issue: "ENG-2", include_activity: false }, { projectId: "project" });
+    expect(quiet).toContain("Parent: ENG-1 — Parent");
+    expect(quiet).toContain("Resources:");
+    expect(quiet).toContain("PR — #12 — https://example.com/pr");
+    expect(quiet).toContain("blocked by: ENG-3 — Blocker");
+    expect(quiet).not.toContain("Activity (");
+
+    const active = await tool.execute({ issue: "ENG-2", include_activity: true }, { projectId: "project" });
+    expect(active).toContain("Activity (last 30):");
+    expect(active.match(/edited the description/g)).toHaveLength(29);
+    expect(active).toContain("Linear: edited the description");
+    expect(active).toContain("Linear: assigned to Pat Assignee");
   });
 });

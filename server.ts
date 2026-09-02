@@ -11,9 +11,10 @@ import {
   type WriteRefusal,
 } from "./src/contract.js";
 import { buildBindingsView, expandTeams, type ProjectSummary } from "./src/bindings.js";
+import { loadOlderActivity, readPanePreferences } from "./src/activity.js";
 import { CLI_COMMANDS, createCliRunner, type CliEnvironment } from "./src/cli.js";
 import { createVersionedStore, KV } from "./src/kv.js";
-import { patFromSetting } from "./src/linear/credential.js";
+import { authHeader, patFromSetting } from "./src/linear/credential.js";
 import {
   configuredSlots,
   CREDENTIAL_SLOTS,
@@ -59,7 +60,9 @@ import { initialsOf } from "./src/select/panel.js";
 import { toneForStateType } from "./src/select/tone.js";
 import { issueDetailText } from "./src/tools-format.js";
 import { registerMentionProviders } from "./src/mentions.js";
-import { registerTools } from "./src/tools.js";
+import { issueNeedsRefresh, registerTools } from "./src/tools.js";
+import { fetchLinearImage, resolveImageAccess } from "./src/image-proxy.js";
+import type { TimelineVocabulary } from "./src/select/timeline.js";
 import { runPrTransition, type PrRunnerDeps } from "./src/automations/pr-runner.js";
 import { startThreadFromIssue, type StartDeps } from "./src/automations/start.js";
 import {
@@ -68,7 +71,11 @@ import {
   WRITE_CONSENT_REMEDY,
   writesAllowed,
 } from "./src/write-gate.js";
-import { applyIssueDetail, applyIssues, toIssueInput } from "./src/sync/apply.js";
+import {
+  applyIssueDetail,
+  applyIssues,
+  toIssueInput,
+} from "./src/sync/apply.js";
 import type { IssueDetailNode, IssueNode } from "./src/linear/types.js";
 import { resolveBinding, type LadderDeps } from "./src/binding.js";
 import { crossTeamRefusal, scopeFor } from "./src/bindings.js";
@@ -1239,7 +1246,9 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       }
       const match = matches.values().next().value ?? null;
       if (match === null) return null;
-      applyIssueDetail(store, match, now());
+      applyIssueDetail(store, match, now(), {
+        debug: (message) => lifetime.log("debug", message),
+      });
       publish("linear:data");
       return store.issue(match.id);
     }
@@ -1304,7 +1313,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       });
     }
 
-    async function detailFor(id: string): Promise<DetailResult> {
+    async function detailFor(id: string, advanceOpened = false): Promise<DetailResult> {
       const issue = store.issue(id) ?? store.issueByIdentifier(id);
       const readable = store.boundTeamIds();
       pruneDetailFetches();
@@ -1336,6 +1345,15 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         };
       }
 
+      if (issueNeedsRefresh(issue)) {
+        const attempt = detailFetches.get(issue.id);
+        if (attempt !== undefined && attempt.done) {
+          return { kind: "missing", identifier: id };
+        }
+        refreshDetailInBackground(issue.id, readable, true);
+        return { kind: "loading" };
+      }
+
       // Return the mirror immediately, then refresh at most once per issue per
       // 30 seconds. The publish from `refreshIssue` makes this surface re-read;
       // the cooldown prevents that publish from becoming a refresh loop.
@@ -1345,11 +1363,80 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       const children = store.childIssues(issue.id, 100);
       const states = store.workflowStates(issue.teamId);
       const comments = store.comments(issue.id);
+      const attachments = store.attachmentsFor(issue.id);
+      const relations = store.relationsFor(issue.id);
+      const history = store.historyFor(issue.id);
+      const reactions = store.reactionsFor(issue.id);
+      const cursor = store.activityCursor(issue.id);
+      const subscriberIds = store.subscribersFor(issue.id);
+      const parent = issue.parentId === null ? null : store.issue(issue.parentId);
+      const preferences = await readPanePreferences({
+        kv,
+        issueId: issue.id,
+        now,
+        advanceOpened,
+      });
+      const historyIds = (kind: string): string[] =>
+        history
+          .filter((event) => event.kind === kind)
+          .flatMap((event) => [event.payload.from, event.payload.to])
+          .filter((value): value is string => typeof value === "string");
       const memberIds = [
         issue.assigneeId,
         issue.creatorId,
         ...comments.map((comment) => comment.userId),
+        ...comments.map((comment) => comment.resolvingUserId ?? null),
+        ...history.map((event) => event.actorId),
+        ...reactions.map((reaction) => reaction.userId),
+        ...subscriberIds,
+        ...historyIds("assignee"),
       ].filter((id): id is string => id !== null);
+      const members = new Map(
+        store.membersByIds(memberIds).map((member) => [member.id, member]),
+      );
+      const labels = new Map(store.labels([issue.teamId]).map((label) => [label.id, label]));
+      const priorityLabels = new Map(
+        store.priorityValues([issue.teamId]).map((value) => [value.priority, value.label]),
+      );
+      const projects = new Map(
+        historyIds("project")
+          .map((id) => store.project(id))
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+          .map((entry) => [entry.id, entry.name]),
+      );
+      const cycles = new Map(
+        historyIds("cycle")
+          .map((id) => store.cycle(id))
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+          .map((entry) => [entry.id, entry.name ?? `Cycle ${entry.number}`]),
+      );
+      const relatedIssues = [
+        parent,
+        ...relations.map((relation) => store.issue(relation.counterpartId)),
+        ...historyIds("parent").map((id) => store.issue(id)),
+      ].filter((entry): entry is IssueRow => entry !== null);
+      const vocabulary: TimelineVocabulary = {
+        states: new Map(states.map((entry) => [entry.id, entry.name])),
+        members: new Map([...members].map(([id, entry]) => [id, entry.displayName])),
+        priorities: priorityLabels,
+        projects,
+        cycles,
+        issues: new Map(relatedIssues.map((entry) => [entry.id, entry.identifier])),
+        labels: new Map([...labels].map(([id, entry]) => [id, entry.name])),
+        teams: new Map(
+          [...new Set([issue.teamId, ...historyIds("team")])]
+            .map((id) => store.team(id))
+            .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+            .map((entry) => [entry.id, entry.name]),
+        ),
+        milestones: new Map(
+          historyIds("milestone")
+            .map((id) => store.milestone(id))
+            .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+            .map((entry) => [entry.id, entry.name]),
+        ),
+        estimationType: team?.estimationType ?? "notUsed",
+      };
 
       return {
         kind: "issue",
@@ -1357,15 +1444,11 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           issue,
           team,
           states,
-          members: new Map(
-            store.membersByIds(memberIds).map((member) => [member.id, member]),
-          ),
-          labels: new Map(store.labels([issue.teamId]).map((label) => [label.id, label])),
-          priorityLabels: new Map(
-            store.priorityValues([issue.teamId]).map((value) => [value.priority, value.label]),
-          ),
+          members,
+          labels,
+          priorityLabels,
           comments,
-          commentsTruncated: false,
+          commentsTruncated: cursor?.commentsMore ?? false,
           subIssues: children.map((child) => ({
             id: child.id,
             identifier: child.identifier,
@@ -1389,6 +1472,35 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
                 })(),
           milestoneName:
             issue.milestoneId === null ? null : (store.milestone(issue.milestoneId)?.name ?? null),
+          attachments,
+          relations,
+          history,
+          reactions,
+          subscribers: subscriberIds
+            .map((id) => members.get(id))
+            .filter((member): member is NonNullable<typeof member> => member !== undefined),
+          subscriberCount: subscriberIds.length,
+          documents: store.documentsFor(issue.id),
+          needs: store.customerNeedsFor(issue.id),
+          parent:
+            parent === null
+              ? null
+              : {
+                  id: parent.id,
+                  identifier: parent.identifier,
+                  title: parent.title,
+                  tone: toneForStateType(
+                    parent.stateId === null
+                      ? null
+                      : store.workflowStates(parent.teamId).find((state) => state.id === parent.stateId)?.type,
+                  ),
+                },
+          lastOpenedAt: preferences.lastOpenedAt,
+          showActivity: preferences.showActivity,
+          viewerId: store.viewer([issue.teamId])?.id ?? null,
+          cursors: cursor,
+          now: now(),
+          vocabulary,
         }),
       };
     }
@@ -1711,6 +1823,42 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         }
       });
     });
+
+    /* ── Linear upload image proxy ───────────────────────────────────────── */
+    bb.http.route(
+      "GET",
+      "/image",
+      async (context) => {
+        const query = new URL(context.req.url).searchParams;
+        const issueName = query.get("issue");
+        const source = query.get("src");
+        if (issueName === null || source === null) {
+          return new Response("bad request", { status: 400 });
+        }
+        const direct = store.issue(issueName);
+        const candidate = (issue: IssueRow) => ({
+          teamId: issue.teamId,
+          workspaceSlot: store.workspaceForTeam(issue.teamId)?.slot ?? null,
+        });
+        const access = resolveImageAccess({
+          directCandidate: direct === null ? null : candidate(direct),
+          identifierCandidates:
+            direct === null ? store.issuesByIdentifier(issueName).map(candidate) : [],
+          readableTeamIds: store.boundTeamIds(),
+          primarySlot: PRIMARY_SLOT,
+          credentialSlots: CREDENTIAL_SLOTS,
+        });
+        if (access === null) return new Response("forbidden", { status: 403 });
+        const credential = await credentialFor(access.slot as CredentialSlot);
+        if (credential === null) return new Response("unavailable", { status: 503 });
+        return fetchLinearImage({
+          source,
+          authorization: authHeader(credential),
+          signal: lifetime.signal,
+        });
+      },
+      { auth: "local" },
+    );
 
     /* ── Webhooks ────────────────────────────────────────────────────────── */
     /*
@@ -3057,7 +3205,39 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       async issue({ id }) {
         lastFrontendReadAt = now();
         lastPanelReadAt = now();
-        return { result: await detailFor(id) };
+        return { result: await detailFor(id, true) };
+      },
+
+      async setActivityVisibility({ showActivity }) {
+        await kv.write(KV.activityVisibility, { v: 1, showActivity });
+        publish("linear:data");
+        return { ok: true };
+      },
+
+      async olderActivity({ issueId }) {
+        const issue = store.issue(issueId) ?? store.issueByIdentifier(issueId);
+        if (
+          issue === null ||
+          issueNeedsRefresh(issue) ||
+          !store.boundTeamIds().includes(issue.teamId)
+        ) {
+          return { ok: false, hasOlder: false };
+        }
+        try {
+          const result = await loadOlderActivity({
+            issueId: issue.id,
+            store,
+            client: clientForTeam(issue.teamId),
+            now,
+            signal: lifetime.signal,
+            debug: (message) => lifetime.log("debug", message),
+          });
+          if (result.ok) publish("linear:data");
+          return result;
+        } catch (error) {
+          lifetime.log("debug", `older activity ${issue.id}: ${describeError(error)}`);
+          return { ok: false, hasOlder: true };
+        }
       },
 
       async updateIssue(params) {

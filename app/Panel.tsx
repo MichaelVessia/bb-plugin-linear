@@ -13,6 +13,7 @@ import {
   usePanelChrome,
 } from "../src/panel-chrome.js";
 import { joinSentence, pluralize } from "../src/format.js";
+import { parsePanelSubPath } from "../src/panel-route.js";
 import { toast } from "sonner";
 import { IssueDetail } from "./Detail.js";
 import { InboxBadge, InboxSegment, useInboxCount } from "./Inbox.js";
@@ -48,9 +49,9 @@ export function LinearPanel({ subPath }: { subPath: string }) {
   const chordPending = useRef(false);
 
   // A deep link lands here: `/plugins/linear/linear/t/ENG` selects a team,
-  // `/i/ENG-123` opens an issue. Parsed rather than trusted — it round-trips
-  // through the address bar.
-  const deepLink = parseSubPath(subPath);
+  // `/i/ENG-123` opens an issue and `/i/ENG-123/c/<id>` targets one comment.
+  // Parsed rather than trusted — it round-trips through the address bar.
+  const deepLink = parsePanelSubPath(subPath);
   const loads = loadsForSegment(state.segment);
   const debouncedSearch = useDebouncedValue(state.search, 180);
 
@@ -313,6 +314,7 @@ export function LinearPanel({ subPath }: { subPath: string }) {
         <aside className="min-h-0 w-full border-l border-border md:w-[26rem] lg:w-[32rem]">
           <IssueDetail
             issueId={openIssue}
+            targetCommentId={deepLink.commentId}
             onClose={() => navigate.toPluginPanel("linear", { subPath: "" })}
           />
         </aside>
@@ -913,28 +915,6 @@ function SkeletonList() {
       ))}
     </ul>
   );
-}
-
-/**
- * `subPath` is the route remainder after the panel root, and it is the only
- * prop this panel gets. Deep links stay real: `/t/ENG` selects a team, and
- * `/i/ENG-123` opens an issue.
- *
- * Parsed defensively — the address bar is user input, and a malformed segment
- * must land on the list rather than throw inside a render.
- */
-export function parseSubPath(subPath: string): {
-  teamKey: string | null;
-  identifier: string | null;
-} {
-  const parts = subPath.split("/").filter(Boolean);
-  if (parts[0] === "t" && parts[1] !== undefined) {
-    return { teamKey: parts[1], identifier: null };
-  }
-  if (parts[0] === "i" && parts[1] !== undefined) {
-    return { teamKey: null, identifier: parts[1] };
-  }
-  return { teamKey: null, identifier: null };
 }
 
 /** Whether the chrome currently narrows the list. Re-exported here so the

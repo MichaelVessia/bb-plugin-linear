@@ -293,13 +293,37 @@ export async function attachUrl(
   return write(deps, "Couldn't attach that link", async () => {
     const owner = deps.clientFor(input.issueId);
     const existing = await owner.attachmentsForUrl(input.url, { initiator: "user" });
-    if (existing.attachmentsForURL.nodes.length > 0) return { alreadyThere: true };
+    if (
+      existing.attachmentsForURL.nodes.some(
+        (attachment) => attachment.issue?.id === input.issueId,
+      )
+    ) return { alreadyThere: true };
 
     const result = await owner.linkUrl(input, {
       initiator: "user",
       ...(deps.signal ? { signal: deps.signal } : {}),
     });
-    unwrapMutation(result.attachmentLinkURL, "attachment", "attach that link");
+    const attachment = unwrapMutation<
+      NonNullable<typeof result.attachmentLinkURL.attachment>
+    >(
+      result.attachmentLinkURL,
+      "attachment",
+      "attach that link",
+    );
+    if (attachment.url !== null) {
+      deps.store.mergeAttachments([{
+        id: attachment.id,
+        issueId: input.issueId,
+        title: attachment.title ?? input.title ?? attachment.url,
+        subtitle: attachment.subtitle,
+        url: attachment.url,
+        sourceType: attachment.sourceType,
+        groupBySource: attachment.groupBySource,
+        createdAt: parseInstant(attachment.createdAt),
+        updatedAt: parseInstant(attachment.updatedAt),
+        creatorId: attachment.creator?.id ?? null,
+      }]);
+    }
     deps.publish?.();
     return { alreadyThere: false };
   });

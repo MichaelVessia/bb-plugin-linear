@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildIssueUpdateInput,
+  attachUrl,
   clientId,
   postComment,
   updateIssue,
@@ -219,6 +220,49 @@ describe("postComment", () => {
   });
 });
 
+describe("attachUrl", () => {
+  it("checks URL ownership by issue and mirrors the returned attachment", async () => {
+    const setup = deps({
+      attachmentsForUrl: vi.fn(async () => ({
+        attachmentsForURL: {
+          nodes: [{ id: "elsewhere", url: "https://example.com", issue: { id: "other", identifier: "ENG-1" } }],
+        },
+      })),
+      linkUrl: vi.fn(async () => ({
+        attachmentLinkURL: {
+          success: true,
+          attachment: {
+            id: "a1", title: "Example", subtitle: null, url: "https://example.com",
+            sourceType: null, groupBySource: false,
+            createdAt: "2026-08-12T10:00:00.000Z",
+            updatedAt: "2026-08-12T10:00:00.000Z",
+            creator: { id: "u1" },
+          },
+        },
+      })),
+    });
+    expect(await attachUrl(setup, { issueId: "i_1", url: "https://example.com", title: null }))
+      .toEqual({ alreadyThere: false });
+    expect(setup.client.linkUrl).toHaveBeenCalled();
+    expect(setup.store.attachmentsFor("i_1")).toEqual([
+      expect.objectContaining({ id: "a1", issueId: "i_1", title: "Example" }),
+    ]);
+  });
+
+  it("does not attach a URL already owned by the same issue", async () => {
+    const setup = deps({
+      attachmentsForUrl: vi.fn(async () => ({
+        attachmentsForURL: {
+          nodes: [{ id: "a1", url: "https://example.com", issue: { id: "i_1", identifier: "ENG-42" } }],
+        },
+      })),
+    });
+    expect(await attachUrl(setup, { issueId: "i_1", url: "https://example.com", title: null }))
+      .toEqual({ alreadyThere: true });
+    expect(setup.client.linkUrl).not.toHaveBeenCalled();
+  });
+});
+
 describe("clientId", () => {
   it("is unique per call", () => {
     expect(clientId()).not.toBe(clientId());
@@ -283,6 +327,31 @@ describe("selectDetail", () => {
       projectName: null,
       cycleName: null,
       milestoneName: null,
+      attachments: [],
+      relations: [],
+      history: [],
+      reactions: [],
+      subscribers: [],
+      documents: [],
+      needs: [],
+      parent: null,
+      lastOpenedAt: null,
+      showActivity: true,
+      viewerId: null,
+      cursors: null,
+      now: NOW,
+      vocabulary: {
+        states: new Map(),
+        members: new Map(),
+        priorities: new Map(),
+        projects: new Map(),
+        cycles: new Map(),
+        issues: new Map(),
+        labels: new Map(),
+        teams: new Map(),
+        milestones: new Map(),
+        estimationType: "notUsed",
+      },
       ...overrides,
     };
   }

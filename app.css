@@ -292,6 +292,24 @@
   box-shadow: inset 1px 0 0 color-mix(in srgb, var(--border) 80%, transparent);
 }
 
+/* A deep link from the inbox gets two seconds of positional confirmation.
+   The wash fades rather than flashing; the row is already centred, so this
+   only answers which comment the navigation meant. */
+.bbl-comment-highlight {
+  animation: bbl-comment-highlight 2s ease-out both;
+}
+
+@keyframes bbl-comment-highlight {
+  from {
+    background: color-mix(in srgb, var(--primary) 18%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 26%, transparent);
+  }
+  to {
+    background: transparent;
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+
 /*
  * ── Skeletons ────────────────────────────────────────────────────────────────
  *
@@ -390,5 +408,10 @@
      for less motion did not ask for the same motion, sooner. */
   .bbl-skeleton {
     animation: none;
+  }
+  .bbl-comment-highlight {
+    animation: none;
+    background: color-mix(in srgb, var(--primary) 18%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 26%, transparent);
   }
 }

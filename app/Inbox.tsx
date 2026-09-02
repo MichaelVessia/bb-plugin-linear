@@ -95,7 +95,13 @@ export function InboxSegment() {
               className="min-w-0 flex-1 truncate text-left text-[13px]"
               onClick={() => {
                 if (item.issueId !== null) {
-                  navigate.toPluginPanel("linear", { subPath: `i/${item.identifier ?? item.issueId}` });
+                  const issuePath = `i/${item.identifier ?? item.issueId}`;
+                  navigate.toPluginPanel("linear", {
+                    subPath:
+                      item.commentId === null
+                        ? issuePath
+                        : `${issuePath}/c/${item.commentId}`,
+                  });
                 }
               }}
             >

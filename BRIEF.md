@@ -195,8 +195,9 @@ list (their shapes, our worse fit).
 **D9 — Surfaces.** `navPanel` (the client), `experimental_threadHeaderAction`
 (one 28px chip: key + state dot + truncated title; unbound-with-candidate
 renders the suggestion; everything bigger in a portaled popover),
-`threadPanelAction` (issue detail: description, controls, sub-issues,
-relations, comments, activity — also openable for any issue named in chat),
+`threadPanelAction` (issue detail: description, controls, parent, sub-issues,
+relations, resources, customer requests, subscribers, reactions, comments and
+an exact-parity activity timeline — also openable for any issue named in chat),
 `settingsSection` (accounts: per-key discovered identity, connection health),
 mention provider (`@issue` → send-time context resolve), message directive
 (`::linear{key="ABC-123"}` renders an issue card in chat). Notifications:
@@ -357,3 +358,28 @@ checklist maintained in `docs/smoke.md` from M2 on.
   `autolink:declined:<projectId>` marker. Inference then stays off for that
   project across reloads; a subsequent manual CLI, RPC, or panel bind clears
   the marker and restores the user's explicit scope.
+
+## 2026-09-02 — v0.3.0 pane parity, read track
+
+- The issue pane now projects resources, activity, relations, parent,
+  reactions, subscribers, documents and customer requests from the mirror.
+  Beat: opening Linear for everything beyond recent comments.
+- Activity is mirrored in `issue_history` and phrased with Linear's timeline
+  grammar. Beat: an ephemeral activity fetch, which would make this the first
+  surface to read Linear directly, and a collapsed-runs variant the owner
+  rejected in favour of exact timeline parity.
+- Relations are finally applied and projected. Beat: nothing — the document,
+  store and panel line existed as dead code while the relation table stayed
+  empty.
+- Comment reconciliation is windowed. Beat: replace-all, which drops older
+  pages, and never-delete, which continues showing comments removed in Linear.
+- Linear-hosted screenshots may render through a local-auth image proxy that
+  pins `uploads.linear.app`, forwards the issue owner's credential, refuses
+  redirects and non-images, and streams through a 10 MB cap. Beat: images-off,
+  which hides every pasted screenshot, and render-any, which loads tracking
+  pixels from arbitrary hosts.
+- Detached parent/relation stubs never enter list, search or count surfaces:
+  `issue.number > 0 OR parent_id IS NOT NULL` is the visibility invariant.
+  A marker column was deferred because the existing impossible-number shape
+  distinguishes detached stubs without another migration; child stubs keep a
+  parent id and therefore remain visible where sub-issues belong.

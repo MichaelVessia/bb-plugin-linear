@@ -276,18 +276,63 @@ export const propertyViewSchema = z.object({
 });
 export type PropertyView = z.infer<typeof propertyViewSchema>;
 
-export const commentViewSchema = z.object({
+export const reactionViewSchema = z.object({
+  emoji: z.string(),
+  count: z.number().int().nonnegative(),
+  mine: z.boolean(),
+  ids: z.array(z.string()),
+});
+export type ReactionView = z.infer<typeof reactionViewSchema>;
+
+const commentBaseViewSchema = z.object({
   id: z.string(),
   body: z.string(),
   author: z.string(),
   authorInitials: z.string(),
   avatarUrl: z.string().nullable(),
   createdAt: z.number().nullable(),
+  createdAtRelative: z.string().nullable(),
+  createdAtAbsolute: z.string().nullable(),
   edited: z.boolean(),
   parentId: z.string().nullable(),
   url: z.string().nullable(),
+  resolved: z.boolean(),
+  resolvedBy: z.string().nullable(),
+  reactions: z.array(reactionViewSchema),
+});
+export const commentViewSchema = commentBaseViewSchema.extend({
+  /** Replies nest once. Deeper Linear chains fold into their root. */
+  replies: z.array(commentBaseViewSchema),
 });
 export type CommentView = z.infer<typeof commentViewSchema>;
+
+export const relationViewSchema = z.object({
+  relationId: z.string(),
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+  tone: toneSchema,
+  done: z.boolean(),
+});
+export type RelationView = z.infer<typeof relationViewSchema>;
+
+export const timelineEntrySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("comment"), commentId: z.string() }),
+  z.object({
+    kind: z.literal("event"),
+    id: z.string(),
+    at: z.number(),
+    atRelative: z.string(),
+    atAbsolute: z.string(),
+    actor: z
+      .object({ name: z.string(), initials: z.string(), avatarUrl: z.string().nullable() })
+      .nullable(),
+    bot: z.string().nullable(),
+    text: z.string(),
+    detail: z.string().optional(),
+  }),
+]);
+export type TimelineEntry = z.infer<typeof timelineEntrySchema>;
 
 export const stateOptionSchema = z.object({
   id: z.string(),
@@ -343,8 +388,60 @@ export const detailViewSchema = z.object({
     cycleName: z.string().nullable(),
   }),
   subIssues: z.array(subIssueViewSchema),
+  parent: z
+    .object({ id: z.string(), identifier: z.string(), title: z.string(), tone: toneSchema })
+    .nullable(),
+  resources: z.object({
+    groups: z.array(
+      z.object({
+        source: z.string(),
+        label: z.string(),
+        items: z.array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            subtitle: z.string().nullable(),
+            url: z.string(),
+            createdAt: z.number().nullable(),
+            kind: z.enum(["attachment", "document"]),
+          }),
+        ),
+      }),
+    ),
+  }),
+  relations: z.object({
+    blockedBy: z.array(relationViewSchema),
+    blocks: z.array(relationViewSchema),
+    related: z.array(relationViewSchema),
+    duplicateOf: z.array(relationViewSchema),
+    duplicates: z.array(relationViewSchema),
+  }),
+  reactions: z.array(reactionViewSchema),
   comments: z.array(commentViewSchema),
   commentsTruncated: z.boolean(),
+  subscribers: z.object({
+    count: z.number().int().nonnegative(),
+    people: z.array(
+      z.object({
+        id: z.string(),
+        displayName: z.string(),
+        initials: z.string(),
+        avatarUrl: z.string().nullable(),
+      }),
+    ),
+  }),
+  customerRequests: z.array(
+    z.object({
+      id: z.string(),
+      customer: z.string(),
+      priority: z.number(),
+      excerpt: z.string(),
+      url: z.string().nullable(),
+    }),
+  ),
+  timeline: z.array(timelineEntrySchema),
+  unreadBoundaryAt: z.number().nullable(),
+  activity: z.object({ showActivity: z.boolean(), hasOlder: z.boolean() }),
   footnotes: z.array(propertyViewSchema),
   teamKey: z.string(),
   teamName: z.string(),
@@ -512,6 +609,7 @@ export const inboxItemSchema = z.object({
   text: z.string(),
   identifier: z.string().nullable(),
   issueId: z.string().nullable(),
+  commentId: z.string().nullable(),
   url: z.string().nullable(),
   /** The workspace name, only when more than one is connected — a merged
    *  inbox without labels is a guessing game, and labels on a single
@@ -721,6 +819,16 @@ export const rpcContract = defineRpcContract({
   issue: {
     input: z.object({ id: z.string().min(1) }).strict(),
     output: z.object({ result: detailResultSchema }),
+  },
+
+  setActivityVisibility: {
+    input: z.object({ showActivity: z.boolean() }).strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+
+  olderActivity: {
+    input: z.object({ issueId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), hasOlder: z.boolean() }),
   },
 
   /**

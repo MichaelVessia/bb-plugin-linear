@@ -335,6 +335,14 @@ export interface IssueDetailResult {
   readonly issue: IssueDetailNode;
 }
 
+export interface IssueActivityPageResult {
+  readonly issue: {
+    readonly id: string;
+    readonly comments: Connection<CommentNode>;
+    readonly history: Connection<IssueHistoryNode>;
+  };
+}
+
 export interface IssueUpdateResult {
   readonly issueUpdate: {
     readonly success: boolean;
@@ -558,6 +566,11 @@ export interface AttachmentLinkResult {
       readonly title: string | null;
       readonly subtitle: string | null;
       readonly url: string | null;
+      readonly sourceType: string | null;
+      readonly groupBySource: boolean;
+      readonly createdAt: string;
+      readonly updatedAt: string;
+      readonly creator: Ref | null;
     } | null;
   };
 }

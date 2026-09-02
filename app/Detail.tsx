@@ -13,13 +13,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ArchiveDialog } from "./ArchiveDialog.js";
 import type { DetailResult, DetailView } from "../src/contract.js";
-import { formatDateTime } from "../src/format.js";
 import { toneClass } from "../src/select/tone.js";
 import { StateGlyph } from "./StateGlyph.js";
 import { PropertyEditors, useEditorOptions } from "./Editors.js";
 import { safeHref } from "./href.js";
 import { useAsync, useLinearRpc } from "./rpc.js";
 import { safeRemoteMarkdown } from "../src/security-boundaries.js";
+import { ReactionChips, Timeline } from "./Timeline.js";
 
 /**
  * One issue, in the order you need it.
@@ -34,7 +34,15 @@ import { safeRemoteMarkdown } from "../src/security-boundaries.js";
  * build. They fail in a sentence on click instead, and the Connection section
  * grows a line saying so.
  */
-export function IssueDetail({ issueId, onClose }: { issueId: string; onClose?: () => void }) {
+export function IssueDetail({
+  issueId,
+  onClose,
+  targetCommentId,
+}: {
+  issueId: string;
+  onClose?: () => void;
+  targetCommentId?: string | null;
+}) {
   const rpc = useLinearRpc();
   const [busy, setBusy] = useState(false);
 
@@ -68,7 +76,14 @@ export function IssueDetail({ issueId, onClose }: { issueId: string; onClose?: (
   }
 
   return (
-    <DetailBody result={detail.value} busy={busy} onChange={change} onClose={onClose} />
+    <DetailBody
+      result={detail.value}
+      busy={busy}
+      onChange={change}
+      onClose={onClose}
+      onReload={detail.reload}
+      targetCommentId={targetCommentId}
+    />
   );
 }
 
@@ -77,11 +92,15 @@ function DetailBody({
   busy,
   onChange,
   onClose,
+  onReload,
+  targetCommentId,
 }: {
   result: DetailResult;
   busy: boolean;
   onChange: (patch: Record<string, unknown> & { id: string }) => void;
   onClose?: () => void;
+  onReload: () => void;
+  targetCommentId?: string | null;
 }) {
   if (result.kind === "loading") {
     return <p className="p-4 text-sm text-muted-foreground">Reading the issue…</p>;
@@ -117,7 +136,14 @@ function DetailBody({
   }
 
   return (
-    <IssueBody detail={result.detail} busy={busy} onChange={onChange} onClose={onClose} />
+    <IssueBody
+      detail={result.detail}
+      busy={busy}
+      onChange={onChange}
+      onClose={onClose}
+      onReload={onReload}
+      targetCommentId={targetCommentId}
+    />
   );
 }
 
@@ -126,11 +152,15 @@ function IssueBody({
   busy,
   onChange,
   onClose,
+  onReload,
+  targetCommentId,
 }: {
   detail: DetailView;
   busy: boolean;
   onChange: (patch: Record<string, unknown> & { id: string }) => void;
   onClose?: () => void;
+  onReload: () => void;
+  targetCommentId?: string | null;
 }) {
   /*
    * `detail.id` and never the `issueId` prop.
@@ -144,6 +174,8 @@ function IssueBody({
    */
   const id = detail.id;
   const options = useEditorOptions(id);
+  const navigate = useBbNavigate();
+  const parent = detail.parent;
 
   return (
     <div className={`${toneClass(detail.tone)} flex h-full flex-col`}>
@@ -199,6 +231,20 @@ function IssueBody({
           to be parsed from the top. The rules cost 1px and let you jump.
         */}
         <div className="space-y-3 px-4 py-3">
+          {parent === null ? null : (
+            <button
+              type="button"
+              className="flex max-w-full items-center gap-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() =>
+                navigate.toPluginPanel("linear", { subPath: `i/${parent.identifier}` })
+              }
+            >
+              <Icon name="ArrowTurnBackward" className="size-3 shrink-0" aria-hidden />
+              <span className="shrink-0">Sub-issue of</span>
+              <span className="shrink-0 font-mono tabular-nums">{parent.identifier}</span>
+              <span className="truncate">{parent.title}</span>
+            </button>
+          )}
           <h2
             className={`text-[15px] font-semibold leading-snug ${
               detail.struckThrough ? "text-muted-foreground line-through" : "text-foreground"
@@ -238,6 +284,7 @@ function IssueBody({
           ) : (
             <p className="text-sm italic text-muted-foreground opacity-70">No description.</p>
           )}
+          <ReactionChips reactions={detail.reactions} />
         </div>
 
         <div className="border-t border-border px-4 py-3">
@@ -247,6 +294,7 @@ function IssueBody({
             busy={busy}
             onPatch={(patch) => onChange({ id, ...patch })}
           />
+          <Subscribers subscribers={detail.subscribers} />
         </div>
 
         {detail.subIssues.length > 0 ? (
@@ -281,7 +329,16 @@ function IssueBody({
           </section>
         ) : null}
 
-        <Comments detail={detail} />
+        <Relations
+          relations={detail.relations}
+          onOpen={(identifier) =>
+            navigate.toPluginPanel("linear", { subPath: `i/${identifier}` })
+          }
+        />
+
+        <Resources groups={detail.resources.groups} />
+
+        <CustomerRequests requests={detail.customerRequests} />
 
         {detail.footnotes.length > 0 ? (
           <footer className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border px-4 py-3 text-[11px] text-muted-foreground opacity-70">
@@ -292,6 +349,12 @@ function IssueBody({
             ))}
           </footer>
         ) : null}
+
+        <Timeline
+          detail={detail}
+          onReload={onReload}
+          targetCommentId={targetCommentId}
+        />
       </div>
 
       <CommentComposer issueId={detail.id} identifier={detail.identifier} />
@@ -454,61 +517,240 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * A conversation, not a stack of cards.
- *
- * Six comments as six bordered boxes is six competing containers. An avatar
- * column and one continuous rail down the left says "this is one thread" and
- * costs a single pixel — and it is the same rail a reply hangs off, so nesting
- * needs no second vocabulary.
- */
-function Comments({ detail }: { detail: DetailView }) {
-  if (detail.comments.length === 0) return null;
+function Subscribers({ subscribers }: { subscribers: DetailView["subscribers"] }) {
+  const [expanded, setExpanded] = useState(false);
+  const names = subscribers.people.map((person) => person.displayName).join(", ");
+  return (
+    <div className="mt-0.5 grid grid-cols-[7rem_1fr] items-start text-[13px]">
+      <span className="flex h-7 items-center text-[11px] uppercase tracking-[0.06em] text-muted-foreground opacity-70">
+        Subscribers
+      </span>
+      <div className="min-w-0">
+        <button
+          type="button"
+          className="flex h-7 w-full items-center gap-2 rounded-md px-1.5 text-left hover:bg-state-hover"
+          title={names === "" ? "No subscribers" : names}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span className="flex min-w-10 -space-x-1.5" aria-hidden>
+            {subscribers.people.slice(0, 4).map((person) => (
+              <span
+                key={person.id}
+                className="grid size-5 place-items-center rounded-full border border-background bg-muted text-[8px] font-medium text-muted-foreground"
+              >
+                {person.initials}
+              </span>
+            ))}
+            {subscribers.people.length === 0 ? (
+              <Icon name="UserRound" className="size-4 text-muted-foreground" aria-hidden />
+            ) : null}
+          </span>
+          <span className="truncate text-[12px] text-muted-foreground">
+            {subscribers.count} subscriber{subscribers.count === 1 ? "" : "s"}
+          </span>
+          <Icon
+            name={expanded ? "ChevronDown" : "ChevronRight"}
+            className="ml-auto size-3 text-muted-foreground"
+            aria-hidden
+          />
+        </button>
+        {expanded ? (
+          <ul className="mt-1 space-y-1 px-1.5">
+            {subscribers.people.length === 0 ? (
+              <li className="text-[11px] text-muted-foreground">No subscribers.</li>
+            ) : (
+              subscribers.people.map((person) => (
+                <li key={person.id} className="flex items-center gap-2 py-0.5 text-[12px]">
+                  <span
+                    className="grid size-5 place-items-center rounded-full bg-muted text-[8px] text-muted-foreground"
+                    aria-hidden
+                  >
+                    {person.initials}
+                  </span>
+                  {person.displayName}
+                </li>
+              ))
+            )}
+          </ul>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function Relations({
+  relations,
+  onOpen,
+}: {
+  relations: DetailView["relations"];
+  onOpen: (identifier: string) => void;
+}) {
+  const groups = [
+    { label: "Blocked by", items: relations.blockedBy },
+    { label: "Blocks", items: relations.blocks },
+    { label: "Related", items: relations.related },
+    // Two directions, two headings: being a duplicate OF ABC-12 and HAVING
+    // duplicate ABC-12 are opposite facts, and one heading would swap them.
+    { label: "Duplicate of", items: relations.duplicateOf },
+    { label: "Duplicates", items: relations.duplicates },
+  ].filter((group) => group.items.length > 0);
+  if (groups.length === 0) return null;
+
   return (
     <section className="border-t border-border px-4 py-3">
-      <SectionLabel>
-        Comments
-        <span className="bbl-count ml-1.5 rounded-full px-1.5 py-px tabular-nums">
-          {detail.comments.length}
-        </span>
-      </SectionLabel>
-
-      <ul className="mt-3 space-y-3.5">
-        {detail.comments.map((comment) => (
-          <li
-            key={comment.id}
-            className={`flex gap-2.5 ${comment.parentId === null ? "" : "bbl-rail ml-3 pl-3"}`}
-          >
-            <span
-              className="mt-0.5 grid size-6 shrink-0 place-items-center overflow-hidden rounded-full bg-muted text-[10px] font-medium text-muted-foreground"
-              aria-hidden
-            >
-              {comment.authorInitials}
-            </span>
-
-            <div className="min-w-0 flex-1 space-y-0.5">
-              <div className="flex items-baseline gap-2">
-                <span className="text-[13px] font-medium text-foreground">{comment.author}</span>
-                {comment.createdAt !== null ? (
-                  <span className="text-[11px] text-muted-foreground opacity-70">
-                    {formatDateTime(comment.createdAt)}
-                  </span>
-                ) : null}
-                {comment.edited ? (
-                  <span className="text-[11px] text-muted-foreground opacity-70">edited</span>
-                ) : null}
-              </div>
-              <Markdown content={safeRemoteMarkdown(comment.body)} className="text-[13px]" />
-            </div>
-          </li>
+      <SectionLabel>Relations</SectionLabel>
+      <div className="mt-2 space-y-3">
+        {groups.map((group) => (
+          <div key={group.label}>
+            <p className="mb-1 text-[11px] text-muted-foreground">
+              {group.label} <span className="tabular-nums opacity-70">{group.items.length}</span>
+            </p>
+            <ul className="space-y-1">
+              {group.items.map((relation) => (
+                <li key={relation.relationId}>
+                  <button
+                    type="button"
+                    className={`${toneClass(relation.tone)} flex w-full items-center gap-2.5 rounded-md px-1 py-1 text-left hover:bg-state-hover`}
+                    onClick={() => onOpen(relation.identifier)}
+                  >
+                    <StateGlyph tone={relation.tone} />
+                    <span className="w-[4.75rem] shrink-0 truncate font-mono text-[11px] tabular-nums text-muted-foreground">
+                      {relation.identifier}
+                    </span>
+                    <span
+                      className={`truncate text-[13px] ${
+                        relation.done ? "text-muted-foreground line-through" : "text-foreground"
+                      }`}
+                    >
+                      {relation.title}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         ))}
-      </ul>
+      </div>
+    </section>
+  );
+}
 
-      {detail.commentsTruncated ? (
-        <p className="mt-3 text-[11px] text-muted-foreground opacity-70">
-          Older comments are in Linear.
-        </p>
-      ) : null}
+function Resources({ groups }: { groups: DetailView["resources"]["groups"] }) {
+  if (groups.length === 0) return null;
+  return (
+    <section className="border-t border-border px-4 py-3">
+      <SectionLabel>Resources</SectionLabel>
+      <div className="mt-2 space-y-3">
+        {groups.map((group) => (
+          <div key={group.source}>
+            <p className="mb-1 text-[11px] text-muted-foreground">
+              {group.label} <span className="tabular-nums opacity-70">{group.items.length}</span>
+            </p>
+            <ul className="space-y-1">
+              {group.items.map((item) => {
+                const href = safeHref(item.url);
+                const content = (
+                  <>
+                    <Icon
+                      name={resourceIcon(group.source, item.kind)}
+                      className="size-4 shrink-0 text-muted-foreground"
+                      aria-hidden
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] text-foreground">{item.title}</span>
+                      {item.subtitle === null || item.subtitle === "" ? null : (
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {item.subtitle}
+                        </span>
+                      )}
+                    </span>
+                    <Icon name="ExternalLink" className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+                  </>
+                );
+                return (
+                  <li key={item.id}>
+                    {href === undefined ? (
+                      <div className="flex items-center gap-2 rounded-md px-1 py-1">{content}</div>
+                    ) : (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-state-hover"
+                      >
+                        {content}
+                      </a>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function resourceIcon(
+  source: string,
+  kind: DetailView["resources"]["groups"][number]["items"][number]["kind"],
+): "Github" | "FileText" | "ExternalLink" | "Paperclip" {
+  if (kind === "document") return "FileText";
+  if (source.toLowerCase() === "github") return "Github";
+  // Every row already ends in the external-link glyph; a second one in the
+  // leading slot reads as a typo.
+  return "Paperclip";
+}
+
+function CustomerRequests({ requests }: { requests: DetailView["customerRequests"] }) {
+  if (requests.length === 0) return null;
+  return (
+    <section className="border-t border-border px-4 py-3">
+      <SectionLabel>Customer requests</SectionLabel>
+      <ul className="mt-2 space-y-1">
+        {requests.map((request) => {
+          const href = request.url === null ? undefined : safeHref(request.url);
+          const content = (
+            <>
+              <span
+                className={`${request.priority >= 3 ? "bbl-danger" : request.priority >= 2 ? "bbl-triage" : "bbl-neutral"} bbl-glyph`}
+                title={`Priority ${String(request.priority)}`}
+              >
+                <Icon name="AlertTriangle" className="size-4" aria-hidden />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium text-foreground">
+                  {request.customer}
+                </span>
+                <span className="block text-[12px] leading-snug text-muted-foreground">
+                  {request.excerpt}
+                </span>
+              </span>
+              {href === undefined ? null : (
+                <Icon name="ExternalLink" className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+              )}
+            </>
+          );
+          return (
+            <li key={request.id}>
+              {href === undefined ? (
+                <div className="flex items-start gap-2 rounded-md px-1 py-1.5">{content}</div>
+              ) : (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-start gap-2 rounded-md px-1 py-1.5 hover:bg-state-hover"
+                >
+                  {content}
+                </a>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }
