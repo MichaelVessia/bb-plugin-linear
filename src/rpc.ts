@@ -16,6 +16,7 @@ import {
   toneSchema,
 } from "./contract.js";
 import { defineRpcContract } from "./sdk-runtime.js";
+import { THREAD_ISSUES_MAX } from "./thread-issues.js";
 
 /** What the header chip and the side panel both know about a thread. */
 export const threadIssueSchema = z.object({
@@ -85,6 +86,39 @@ export const serverRpcContract = defineRpcContract({
   threadIssue: {
     input: z.object({ threadId: z.string() }),
     output: threadIssueSchema,
+  },
+
+  /**
+   * Many threads at once, from the mirror only — for another plugin's
+   * sidebar. Unlike `threadIssue`, asking never starts an evaluation, so
+   * two hundred rows cost two hundred row reads and no Linear calls. Ids
+   * past the cap are left out of the answer rather than rejected.
+   */
+  threadIssues: {
+    input: z.object({ threadIds: z.array(z.string()).max(THREAD_ISSUES_MAX) }),
+    output: z.object({
+      threads: z.record(
+        z.string(),
+        z.object({
+          binding: z
+            .object({
+              issueId: z.string(),
+              identifier: z.string(),
+              title: z.string(),
+              stateName: z.string(),
+              tone: toneSchema,
+              glyph: glyphSpecSchema,
+              url: z.string().nullable(),
+              origin: z.enum(["spawn", "manual", "branch", "message"]),
+              provenance: z.string().nullable(),
+            })
+            .nullable(),
+          suggestion: z
+            .object({ issueId: z.string(), identifier: z.string(), title: z.string() })
+            .nullable(),
+        }),
+      ),
+    }),
   },
 
   /** Bind manually (issueId set) or unbind (issueId null). Accepting a
