@@ -64,6 +64,7 @@ import type { IssueRow } from "./src/store/rows.js";
 import { estimateLabel, estimateScale, selectDetail } from "./src/select/detail.js";
 import { initialsOf } from "./src/select/panel.js";
 import { toneForStateType } from "./src/select/tone.js";
+import { threadIssuesFor } from "./src/thread-issues.js";
 import { glyphSpec, glyphsForStates, projectGlyphSpec } from "./src/select/glyph.js";
 import { issueDetailText } from "./src/tools-format.js";
 import {
@@ -3616,6 +3617,11 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         });
         const suggestion = suggestions.get(threadId) ?? null;
         return { binding: null, suggestion, alternates: [] };
+      },
+
+      async threadIssues({ threadIds }) {
+        lastFrontendReadAt = now();
+        return { threads: threadIssuesFor({ threadIds, store, suggestions }) };
       },
 
       async bindThread({ threadId, issueId }) {
