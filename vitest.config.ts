@@ -10,6 +10,10 @@ import { defineConfig } from "vitest/config";
  * Linear workspace CI does not have.
  */
 export default defineConfig({
+  resolve: { alias: {
+    "@bb/plugin-sdk/app": "@get-bb/plugin-sdk/app",
+    "@": new URL(".", import.meta.url).pathname,
+  } },
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],

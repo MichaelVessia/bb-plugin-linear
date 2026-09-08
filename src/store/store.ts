@@ -1,3 +1,4 @@
+import { createThreadWorkStore, type ThreadWorkStore } from "./thread-work.js";
 import type { Database } from "better-sqlite3";
 import { MIGRATIONS } from "./migrations.js";
 import type {
@@ -175,7 +176,7 @@ export interface IssueQuery extends IssueFilter {
 
 /* ────────────────────────────────────────────────────────────────────────── */
 
-export interface Store {
+export interface Store extends ThreadWorkStore {
   readonly db: Database;
 
   putWorkspace(row: Omit<WorkspaceRow, "fetchedAt">, at: number): void;
@@ -403,6 +404,7 @@ export interface Store {
 }
 
 export function createStore(db: Database): Store {
+  const work = createThreadWorkStore(db);
   const placeholders = (count: number) => Array.from({ length: count }, () => "?").join(", ");
   const LEGACY_WORKSPACE_ID = "__legacy__";
 
@@ -612,6 +614,7 @@ export function createStore(db: Database): Store {
   };
 
   return {
+    ...work,
     db,
 
     /* ── Identity ────────────────────────────────────────────────────────── */
@@ -2100,18 +2103,12 @@ export function createStore(db: Database): Store {
     },
 
     linkThread(row) {
-      db.prepare(
-        `INSERT INTO thread_link (thread_id, issue_id, team_id, project_id, created_at, origin, provenance)
-         VALUES (@threadId, @issueId, @teamId, @projectId, @createdAt, @origin, @provenance)
-         ON CONFLICT(thread_id) DO UPDATE SET
-           issue_id = excluded.issue_id, team_id = excluded.team_id,
-           project_id = excluded.project_id, origin = excluded.origin,
-           provenance = excluded.provenance`,
-      ).run({ ...row, provenance: row.provenance ?? null });
+      work.changeThreadWork({ threadId: row.threadId, action: "start", issue: row,
+        now: row.createdAt, automatic: row.origin === "branch" || row.origin === "message" });
     },
 
     unlinkThread(threadId) {
-      db.prepare(`DELETE FROM thread_link WHERE thread_id = ?`).run(threadId);
+      work.changeThreadWork({ threadId, action: "clear", now: Date.now() });
     },
 
     threadLink(threadId) {
@@ -2142,7 +2139,7 @@ export function createStore(db: Database): Store {
         .prepare(
           `SELECT thread_id AS threadId, issue_id AS issueId, team_id AS teamId,
                   project_id AS projectId, created_at AS createdAt, origin, provenance
-             FROM thread_link WHERE issue_id IN (${placeholders(issueIds.length)})`,
+             FROM thread_work WHERE status = 'active' AND issue_id IN (${placeholders(issueIds.length)})`,
         )
         .all(...issueIds) as ThreadLinkRow[];
     },

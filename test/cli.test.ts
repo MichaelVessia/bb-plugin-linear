@@ -63,6 +63,7 @@ function environment(overrides: Partial<CliEnvironment> = {}): CliEnvironment {
     inbox: async () => ({ ok: true, text: "Nothing is waiting for you in Linear." }),
     start: async () => ({ ok: true, message: "Started a thread on ENG-1." }),
     link: async () => ({ ok: true, message: "Linked this thread to ENG-1." }),
+    work: async () => ({ ok: true, text: "Thread work updated." }),
     now: () => NOW,
     ...overrides,
   };

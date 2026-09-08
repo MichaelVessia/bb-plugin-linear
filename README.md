@@ -59,19 +59,41 @@ create form with nine fields loses the race against a sticky note.
 
 ## The thread chip
 
-Every bb thread resolves *which issue it is working on* through a
-deterministic ladder — an explicit link, the branch name Linear generated, an
-issue key in the branch or the conversation, and only then a fuzzy title match
-that **suggests instead of binding**. A thread whose title merely resembles an
-issue gets a question, not a bind:
+A thread tracks **active issues**, one **current issue**, and **previous work**.
+The header shows the current issue and a count of additional active issues,
+for example `ENG-42 +2`. The panel lets you focus, finish, remove, or resume
+work without losing its history. Opening an issue's detail does not change
+what the thread is working on.
 
-![The header chip suggesting LIN-3 for a matching thread](./assets/readme/chip-suggested.png)
+Agents record task acceptance and transitions through `linear_thread_work`,
+including moving to the next queued task. New accepted user messages are
+scanned incrementally; incidental references become suggestions with separate
+**Switch to** and **Add to current work** actions. Initial branch and identifier
+binding still works, but old branches and prompts cannot resurrect work after
+an explicit switch, finish, or removal. Assistant and tool output never bind.
 
-One click accepts it, and the chip becomes the issue — state glyph and all.
-The binding is injected into every agent turn's instructions, so agents in
-**any provider** know their task with zero tool calls:
+`start` switches the active set to one issue and preserves previous work;
+`add` retains concurrent tasks; `focus` changes the current issue; `finish`
+ends work on one issue here; `remove` dismisses a mistaken link; `clear` ends
+all active work here. These operations change BB only. Linear workflow status
+is managed separately for the particular issue.
 
-![The header chip bound to LIN-3](./assets/readme/chip-bound.png)
+```sh
+bb linear work                         # current, active, previous, revision
+bb linear work start ENG-42
+bb linear work add ENG-43
+bb linear work focus ENG-43 --revision 2
+bb linear work finish ENG-43
+```
+
+The existing `linear_thread_bind` / `bb linear link` shortcuts still set one
+current issue. RPC `threadIssue` and batch `threadIssues` retain `binding` as
+the current-issue projection and add `active` / `activeCount`; `threadIssue`
+also returns `history`, `historyCount`, and `revision`. Batch reads remain
+mirror-only and are capped at 200 threads, with at most 20 active issues per
+thread. The panel shows the latest 50 available history entries; older issues
+remain stored and can be resumed by identifier. Sidebar consumers can use
+`activeCount` to display additional work while older clients follow `binding`.
 
 ## The issue pane
 
@@ -200,7 +222,7 @@ bb linear issues | issue | create | sync  the mirror, read and written
 bb linear move | assign | set | comment   one issue, changed
 bb linear attach | archive                links; reversible archive
 bb linear inbox | webhook | forget        inbox; webhooks; leave no trace
-bb linear start | link | unlink           threads from issues, issues on threads
+bb linear start | link | unlink | work    threads, current and concurrent work
 ```
 
 Every read answers from the local copy. Run any read with `--json` for

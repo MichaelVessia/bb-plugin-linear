@@ -1,3 +1,4 @@
+import { collectThreadEvidence } from "./src/thread-evidence.js";
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
 
@@ -64,7 +65,8 @@ import type { IssueRow } from "./src/store/rows.js";
 import { estimateLabel, estimateScale, selectDetail } from "./src/select/detail.js";
 import { initialsOf } from "./src/select/panel.js";
 import { toneForStateType } from "./src/select/tone.js";
-import { threadIssuesFor } from "./src/thread-issues.js";
+import { type WorkAction } from "./src/store/thread-work.js";
+import { threadIssuesFor, createWorkProjector } from "./src/thread-issues.js";
 import { glyphSpec, glyphsForStates, projectGlyphSpec } from "./src/select/glyph.js";
 import { issueDetailText } from "./src/tools-format.js";
 import {
@@ -92,9 +94,7 @@ import {
 import type { IssueDetailNode, IssueNode } from "./src/linear/types.js";
 import {
   resolveBinding,
-  type LadderAlternate,
   type LadderDeps,
-  type LadderMessage,
 } from "./src/binding.js";
 import { crossTeamRefusal, scopeFor } from "./src/bindings.js";
 import {
@@ -862,13 +862,14 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           // A deleted thread's link is dead weight that the panel would keep
           // drawing bb-facts from — "a thread is working on this" about a
           // thread that no longer exists.
-          if (event === "thread.deleted") store.unlinkThread(thread.id);
+          if (event === "thread.deleted") {
+            if (evaluations.has(thread.id)) deletedDuringEvaluation.add(thread.id);
+            store.deleteThreadWork(thread.id);
+          }
         });
         if (event !== "thread.failed") {
           suggestions.delete(thread.id);
-          alternatesByThread.delete(thread.id);
           instructionCache.delete(thread.id);
-          declined.delete(thread.id);
         }
       });
     }
@@ -2878,14 +2879,6 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       { issueId: string; identifier: string; title: string }
     >();
 
-    /** Other in-scope issues the user's messages named, per bound thread.
-     *  In memory for the same reason suggestions are: hints, not state. */
-    const alternatesByThread = new Map<string, readonly LadderAlternate[]>();
-
-    /** How many user prompts the ladder scans. Past twenty, a key is far more
-     *  likely a digression than the thread's subject. */
-    const USER_MESSAGE_SCAN_LIMIT = 20;
-
     /** An unbound project can produce the same non-binding answer on every
      *  active/idle event. Keep that answer quiet for one minute; a successful
      *  bind removes the project from this path entirely. */
@@ -2899,16 +2892,6 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
      *  the thread-start path, so the strings are prebuilt here and only ever
      *  *read* there. */
     const instructionCache = new Map<string, string>();
-
-    /**
-     * Issues this thread said "not that one" to.
-     *
-     * A manual unlink must stick: without this, the next thread event re-runs
-     * the ladder and the branch rung re-binds the exact issue the user just
-     * removed. In memory — a restart forgets declines, which errs toward
-     * re-offering, and re-offering is one click to decline again.
-     */
-    const declined = new Map<string, Set<string>>();
 
     function evidenceForAutolink(
       branchName: string | null,
@@ -3017,14 +3000,17 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
     }
 
     function ladderDeps(readTeamIds: ReadonlySet<string>, threadId: string): LadderDeps {
-      const declinedHere = declined.get(threadId) ?? new Set<string>();
+      const declinedHere = new Set([
+        ...store.threadWork(threadId).filter((row) => row.status !== "active").map((row) => row.issueId),
+      ]);
       return {
         threadLink: (id) => store.threadLink(id),
         issuesByBranch: (branch) =>
           store.issuesByBranch(branch).filter((issue) => !declinedHere.has(issue.id)),
         issueByIdentifier: (identifier) => {
-          const issue = store.issueByIdentifier(identifier);
-          return issue !== null && declinedHere.has(issue.id) ? null : issue;
+          const matches = store.issuesByIdentifier(identifier).filter((issue) =>
+            readTeamIds.has(issue.teamId) && !declinedHere.has(issue.id));
+          return matches.length === 1 ? matches[0]! : null;
         },
         openIssues: () =>
           store
@@ -3071,7 +3057,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
     }
 
     /**
-     * The user's own messages, oldest first, each labelled for provenance.
+     * Accepted user messages since the durable cursor, newest first.
      *
      * This — and only this — is the text the message rung may bind from.
      * Assistant and tool output is never read here: it names every issue the
@@ -3082,32 +3068,30 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
      * messages that render on the user side, and `unlabeled` drops the
      * remaining system-kind rows.
      */
-    async function userMessagesFor(threadId: string): Promise<LadderMessage[]> {
-      const timeline = await lifetime.runAsync(
-        "timeline",
-        () => bb.sdk.threads.timeline({ threadId }),
-        null,
-      );
-      if (timeline === null) return [];
-      const messages: LadderMessage[] = [];
-      for (const row of timeline.rows) {
-        if (messages.length >= USER_MESSAGE_SCAN_LIMIT) break;
-        if (row.kind !== "conversation" || row.role !== "user") continue;
-        if (row.initiator !== "user") continue;
-        if (row.systemMessageKind !== "unlabeled") continue;
-        if (row.turnRequest.status === "rejected") continue;
-        const text = row.text.trim();
-        if (text === "") continue;
-        messages.push({
-          text,
-          label:
-            messages.length === 0 ? "the opening user message" : "a later user message",
-        });
-      }
-      return messages;
+    async function userMessagesFor(threadId: string) {
+      const work = store.threadWorkState(threadId);
+      const timeline = await lifetime.runAsync("timeline", () => bb.sdk.threads.timeline({
+        threadId, afterSequence: String(work.afterSequence),
+      }), null);
+      return timeline === null ? { messages: [], afterSequence: work.afterSequence } :
+        collectThreadEvidence(timeline.rows, work.afterSequence);
     }
 
-    async function evaluateThreadBinding(threadId: string): Promise<void> {
+    const evaluations = new Map<string, Promise<void>>();
+    const deletedDuringEvaluation = new Set<string>();
+    function evaluateThreadBinding(threadId: string): Promise<void> {
+      const pending = evaluations.get(threadId);
+      if (pending) return pending;
+      const run = evaluateThreadBindingNow(threadId).finally(() => {
+        evaluations.delete(threadId);
+        deletedDuringEvaluation.delete(threadId);
+      });
+      evaluations.set(threadId, run);
+      return run;
+    }
+
+    async function evaluateThreadBindingNow(threadId: string): Promise<void> {
+      const initialWork = store.threadWorkState(threadId);
       const thread = await threadIfAny(threadId);
       if (thread === null) return;
 
@@ -3124,7 +3108,8 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       }
 
       const title = thread.title ?? null;
-      const userMessages = await userMessagesFor(threadId);
+      const evidence = await userMessagesFor(threadId);
+      const userMessages = evidence.messages;
       let scope = projectId === null ? null : scopeFor(projectId, bindingSnapshot);
       let readTeamIds = new Set(scope?.readTeamIds ?? []);
       if (readTeamIds.size === 0) {
@@ -3184,178 +3169,127 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         readTeamIds = new Set(scope.readTeamIds);
       }
 
+      // A UI/tool operation may have committed while the timeline or environment was loading.
+      if (deletedDuringEvaluation.has(threadId) || lifetime.disposed ||
+          store.threadWorkState(threadId).revision !== initialWork.revision) return;
+      const existing = store.threadLink(threadId);
       const outcome = resolveBinding(ladderDeps(readTeamIds, threadId), {
         threadId,
-        branchName,
+        // Once explicitly managed, an old branch can only be context, never a new task.
+        branchName: initialWork.managed ? null : branchName,
         userMessages,
-        title,
+        title: initialWork.managed ? null : title,
       });
-
-      if (outcome.kind === "bound") {
-        if (outcome.isNew) {
-          store.linkThread({
-            threadId,
-            issueId: outcome.issueId,
-            teamId: outcome.teamId,
-            projectId,
-            createdAt: now(),
-            origin: outcome.origin,
-            provenance: outcome.provenance,
-          });
-          suggestions.delete(threadId);
-          publish("linear:data");
-        }
-        // Other issues the user named never re-bind a bound thread — they
-        // surface as alternates the chip and the tool can offer.
-        const previous = alternatesByThread.get(threadId);
-        if (outcome.alternates.length > 0) {
-          alternatesByThread.set(threadId, outcome.alternates);
-        } else {
-          alternatesByThread.delete(threadId);
-        }
-        if (
-          JSON.stringify(previous ?? []) !== JSON.stringify(outcome.alternates) &&
-          !outcome.isNew
-        ) {
-          publish("linear:data");
-        }
-      } else if (outcome.kind === "suggestion") {
-        const previous = suggestions.get(threadId);
-        suggestions.set(threadId, {
-          issueId: outcome.issueId,
-          identifier: outcome.identifier,
-          title: outcome.title,
+      if (outcome.kind === "bound" && outcome.isNew && !initialWork.managed) {
+        store.changeThreadWork({ threadId, action: "start", now: now(), automatic: true,
+          expectedRevision: initialWork.revision,
+          issue: { threadId, issueId: outcome.issueId, teamId: outcome.teamId, projectId,
+            createdAt: now(), origin: outcome.origin, provenance: outcome.provenance },
         });
-        alternatesByThread.delete(threadId);
+        suggestions.delete(threadId);
+        publish("linear:data");
+      } else if (outcome.kind === "suggestion" && !initialWork.managed && existing === null) {
+        const previous = suggestions.get(threadId);
+        suggestions.set(threadId, { issueId: outcome.issueId, identifier: outcome.identifier, title: outcome.title });
         if (previous?.issueId !== outcome.issueId) publish("linear:data");
-      } else {
-        alternatesByThread.delete(threadId);
-        if (suggestions.delete(threadId)) publish("linear:data");
       }
+
+      // Mentions are suggestions, including for manual/spawn links. They never switch work.
+      const activeIds = new Set(store.threadWork(threadId).filter((row) => row.status === "active").map((row) => row.issueId));
+      const candidates = userMessages.length === 0 ? [...initialWork.candidates] : [] as string[];
+      for (const message of userMessages) {
+        for (const identifier of identifiersInText(message.text).identifiers) {
+          const matches = store.issuesByIdentifier(identifier).filter((issue) => readTeamIds.has(issue.teamId));
+          if (matches.length !== 1) continue;
+          const issue = matches[0]!;
+          if (activeIds.has(issue.id) || store.threadWork(threadId).some((row) => row.issueId === issue.id && row.status === "removed")) continue;
+          if (!candidates.includes(issue.id) && candidates.length < 3) candidates.push(issue.id);
+        }
+      }
+      const revision = store.threadWorkState(threadId).revision;
+      store.saveThreadEvidence(threadId, evidence.afterSequence, candidates, revision);
+      if (JSON.stringify(initialWork.candidates) !== JSON.stringify(candidates)) publish("linear:data");
       rebuildInstruction(threadId);
     }
 
-    /** The per-turn sentence an agent gets about its thread's issue: what it
-     *  is, where it stands, how it was bound, and the three commands that
-     *  matter — so the task follows the thread with zero tool calls. */
+    const WORK_INSTRUCTIONS = "Keep this thread's Linear work current: when accepting or resuming a new task, call linear_thread_work with action start; use add for concurrent work, focus when changing attention, finish when work on that issue is finished here, and remove for a mistaken link. Start replaces the active set and keeps history; add preserves other active issues. Do this when taking the next task from a queue too. Read linear_thread_issue at the start of a turn when working on Linear tasks; it includes the current revision. Pass expectedRevision when changing work, and re-read on conflict. A mention, research result, or viewing an issue is not task acceptance. These operations change BB only; update Linear status separately for the specific issue when authorized.";
+
     function rebuildInstruction(threadId: string): void {
-      const link = store.threadLink(threadId);
-      if (link === null) {
-        instructionCache.delete(threadId);
-        return;
-      }
-      const issue = store.issue(link.issueId);
-      if (issue === null) {
-        instructionCache.delete(threadId);
-        return;
-      }
-      setInstruction(threadId, link, issue);
+      const view = threadWorkView(threadId, 5);
+      const describe = (issue: { identifier: string; issueId: string; tone: string }) =>
+        `${safeIssueReference(issue.identifier, issue.issueId)} (${issue.tone})`;
+      instructionCache.set(threadId, [
+        view.binding === null ? "This thread has no current Linear issue." :
+          `Current Linear issue: ${describe(view.binding)} (bound via ${view.binding.origin}).`,
+        `Active work: ${view.active.map(describe).join(", ") || "none"}.`,
+        `Previous work: ${view.history.slice(0, 5).map(describe).join(", ") || "none"}${view.historyCount > 5 ? ` (${view.historyCount} total)` : ""}.`,
+        `Work revision: ${view.revision}.`,
+        view.alternates.length === 0 ? "" : `Suggested by user references, not active work: ${view.alternates.map((entry) => safeIssueReference(entry.identifier, entry.issueId)).join(", ")}.`,
+        UNTRUSTED_LINEAR_POLICY,
+        WORK_INSTRUCTIONS,
+      ].filter(Boolean).join(" "));
     }
 
-    function setInstruction(
-      threadId: string,
-      link: NonNullable<ReturnType<Store["threadLink"]>>,
-      issue: IssueRow,
-    ): void {
-      const reference = safeIssueReference(issue.identifier, issue.id);
-      const provenance =
-        link.provenance === null || link.provenance === undefined
-          ? ""
-          : ` — ${link.provenance}`;
-      instructionCache.set(
-        threadId,
-        [
-          `This thread is linked to Linear issue ${reference} (bound via ${link.origin}${provenance}).`,
-          UNTRUSTED_LINEAR_POLICY,
-          `Read it with \`bb linear issue ${reference} --comments\`;`,
-          `comment with \`bb linear comment ${reference} -- <text>\`;`,
-          `move it with \`bb linear move ${reference} <state-name-or-type>\`.`,
-        ].join(" "),
-      );
-    }
-
-    /** Re-derive every cached sentence from the mirror. Called from the
-     *  throttled publish path, so a state change reaches the next turn's
-     *  context without a per-turn database read. Both tables are hydrated in
-     *  bounded batches: two queries total, not two per cached thread. */
     function rebuildAllInstructions(): void {
-      const threadIds = [...instructionCache.keys()];
-      const links = new Map(
-        store.threadLinksByThreadIds(threadIds).map((link) => [link.threadId, link]),
-      );
-      const issues = new Map(
-        store
-          .issuesByIds([...links.values()].map((link) => link.issueId))
-          .map((issue) => [issue.id, issue]),
-      );
-      for (const threadId of threadIds) {
-        const link = links.get(threadId);
-        const issue = link === undefined ? undefined : issues.get(link.issueId);
-        if (link === undefined || issue === undefined) {
-          instructionCache.delete(threadId);
-        } else {
-          setInstruction(threadId, link, issue);
-        }
-      }
+      for (const threadId of instructionCache.keys()) rebuildInstruction(threadId);
     }
 
     bb.agents.contributeInstructions(({ threadId }) =>
-      threadId === undefined || threadId === null
-        ? null
-        : (instructionCache.get(threadId) ?? null),
+      threadId === undefined || threadId === null ? null :
+        (instructionCache.get(threadId) ?? WORK_INSTRUCTIONS),
     );
+
+    function threadWorkView(threadId: string, historyLimit = 50) {
+      const project = createWorkProjector(store);
+      const entry = threadIssuesFor({ threadIds: [threadId], store, suggestions })[threadId]!;
+      const previous = store.threadWork(threadId).filter((row) => row.status === "previous");
+      const workState = store.threadWorkState(threadId);
+      const alternates = workState.candidates.flatMap((id) => {
+        const issue = store.issue(id);
+        return issue === null ? [] : [{ issueId: issue.id, identifier: issue.identifier, title: issue.title }];
+      });
+      const issue = entry.binding === null ? null : store.issue(entry.binding.issueId);
+      const states = issue === null ? [] : store.workflowStates(issue.teamId);
+      const glyphs = glyphsForStates(states);
+      return { ...entry, revision: workState.revision,
+        historyCount: previous.length,
+        history: previous.slice(0, historyLimit).flatMap((row) => {
+          const binding = project(row);
+          return binding === null ? [] : [binding];
+        }),
+        alternates,
+        binding: entry.binding === null ? null : { ...entry.binding,
+          stateOptions: [...states].sort((a, b) => a.position - b.position).map((state) => ({
+            id: state.id, name: state.name, type: state.type, tone: toneForStateType(state.type),
+            glyph: glyphs.get(state.id) ?? glyphSpec({ type: state.type, color: state.color, startedIndex: null, startedCount: null }),
+          })),
+        },
+      };
+    }
 
     function bindManually(
       threadId: string,
       issueId: string | null,
       projectId: string | null,
+      action: WorkAction = issueId === null ? "clear" : "start",
+      expectedRevision?: number,
     ): { ok: boolean; message: string | null } {
-      if (issueId === null) {
-        const existing = store.threadLink(threadId);
-        if (existing !== null) {
-          const set = declined.get(threadId) ?? new Set<string>();
-          set.add(existing.issueId);
-          declined.set(threadId, set);
-        }
-        store.unlinkThread(threadId);
-        suggestions.delete(threadId);
-        alternatesByThread.delete(threadId);
-        instructionCache.delete(threadId);
-        publish("linear:data");
-        return { ok: true, message: "Unlinked." };
+      const issue = issueId === null ? null : store.issue(issueId);
+      if (action !== "clear" && (issue === null || projectId === null ||
+          !scopeFor(projectId, bindingSnapshot).readTeamIds.includes(issue.teamId))) {
+        return { ok: false, message: "That issue is not readable by this thread's project." };
       }
-      if (projectId === null) {
-        return { ok: false, message: "This thread has no project, so no Linear scope can be established." };
-      }
-      const current = scopeFor(projectId, bindingSnapshot);
-      const exact = store.issue(issueId);
-      const matches = exact === null ? store.issuesByIdentifier(issueId) : [exact];
-      const inScope = matches.filter((entry) => current.readTeamIds.includes(entry.teamId));
-      if (inScope.length > 1) {
-        return {
-          ok: false,
-          message: `${issueId} is ambiguous in this project's Linear scope. Use the issue id or URL.`,
-        };
-      }
-      const issue = inScope[0] ?? null;
-      if (issue === null) {
-        return { ok: false, message: `No issue called ${issueId} is readable by this project.` };
-      }
-      declined.get(threadId)?.delete(issue.id);
-      store.linkThread({
-        threadId,
-        issueId: issue.id,
-        teamId: issue.teamId,
-        projectId,
-        createdAt: now(),
-        origin: "manual",
-        provenance: null,
+      const result = store.changeThreadWork({ threadId, action, now: now(), expectedRevision,
+        ...(issue === null ? {} : { issue: { threadId, issueId: issue.id, teamId: issue.teamId,
+          projectId, createdAt: now(), origin: "manual" as const, provenance: "Explicit thread work operation" } }),
       });
+      if (!result.ok) return result;
       suggestions.delete(threadId);
-      alternatesByThread.delete(threadId);
       rebuildInstruction(threadId);
       publish("linear:data");
-      return { ok: true, message: `Linked to ${issue.identifier}.` };
+      return { ok: true, message: action === "clear" ? "No active issues. Previous work was kept." :
+        `${issue?.identifier}: ${action === "start" ? "current work" : action === "add" ? "added to active work" :
+          action === "focus" ? "current issue" : action === "finish" ? "finished in this thread" : "removed from this thread"}.` };
     }
 
     /**
@@ -3370,8 +3304,11 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       threadId: string,
       idOrIdentifier: string | null,
       projectId: string | null,
+      action: WorkAction = idOrIdentifier === null ? "clear" : "start",
+      expectedRevision = store.threadWorkState(threadId).revision,
     ): Promise<{ ok: boolean; message: string | null }> {
-      if (idOrIdentifier === null) return bindManually(threadId, null, projectId);
+      if (action === "clear") return bindManually(threadId, null, projectId, action, expectedRevision);
+      if (idOrIdentifier === null) return { ok: false, message: "Choose an issue." };
       if (projectId === null) {
         return {
           ok: false,
@@ -3443,7 +3380,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         };
       }
 
-      return bindManually(threadId, issue.id, projectId);
+      return bindManually(threadId, issue.id, projectId, action, expectedRevision);
     }
 
     /* ── Registrations ───────────────────────────────────────────────────── */
@@ -3563,60 +3500,9 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
 
       async threadIssue({ threadId }) {
         lastFrontendReadAt = now();
-        const link = store.threadLink(threadId);
-        if (link !== null) {
-          const issue = store.issue(link.issueId);
-          if (issue !== null) {
-            const states = store.workflowStates(issue.teamId);
-            const state = states.find((entry) => entry.id === issue.stateId) ?? null;
-            const glyphs = glyphsForStates(states);
-            return {
-              binding: {
-                issueId: issue.id,
-                identifier: issue.identifier,
-                title: issue.title,
-                stateName: state?.name ?? "Unknown state",
-                tone: toneForStateType(state?.type),
-                glyph:
-                  (state === null ? undefined : glyphs.get(state.id)) ??
-                  glyphSpec({
-                    type: state?.type ?? "",
-                    color: state?.color ?? null,
-                    startedIndex: null,
-                    startedCount: null,
-                  }),
-                url: issue.url,
-                origin: link.origin,
-                provenance: link.provenance ?? null,
-                stateOptions: [...states]
-                  .sort((a, b) => a.position - b.position)
-                  .map((entry) => ({
-                    id: entry.id,
-                    name: entry.name,
-                    type: entry.type,
-                    tone: toneForStateType(entry.type),
-                    glyph:
-                      glyphs.get(entry.id) ??
-                      glyphSpec({
-                        type: entry.type,
-                        color: entry.color,
-                        startedIndex: null,
-                        startedCount: null,
-                      }),
-                  })),
-              },
-              suggestion: null,
-              alternates: [...(alternatesByThread.get(threadId) ?? [])],
-            };
-          }
-        }
-        // Unbound: kick an evaluation so a chip mounted on a fresh thread
-        // converges without waiting for the next lifecycle event.
-        lifetime.detach("binding", async () => {
-          await evaluateThreadBinding(threadId);
-        });
-        const suggestion = suggestions.get(threadId) ?? null;
-        return { binding: null, suggestion, alternates: [] };
+        // Reconcile on mount, including already-bound threads. Evaluations coalesce.
+        lifetime.detach("binding", () => evaluateThreadBinding(threadId));
+        return threadWorkView(threadId);
       },
 
       async threadIssues({ threadIds }) {
@@ -3627,6 +3513,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       async bindThread({ threadId, issueId }) {
         const thread = await threadIfAny(threadId);
         return linkThreadExplicit(threadId, issueId, thread?.projectId ?? null);
+      },
+
+      async updateThreadWork({ threadId, action, issue, expectedRevision }) {
+        const thread = await threadIfAny(threadId);
+        if (thread === null) return { ok: false, message: "This thread no longer exists." };
+        return linkThreadExplicit(threadId, issue, thread.projectId ?? null, action, expectedRevision);
       },
 
       async issue({ id }) {
@@ -5025,6 +4917,15 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         };
       },
 
+      work: async ({ threadId, action, identifier, expectedRevision }) => {
+        if (!threadId) return { ok: false, text: "Run this from a thread, or pass --thread <id>." };
+        const thread = await threadIfAny(threadId);
+        if (!thread) return { ok: false, text: "This thread no longer exists." };
+        if (!action) return { ok: true, text: JSON.stringify(threadWorkView(threadId), null, 2) };
+        const result = await linkThreadExplicit(threadId, identifier ?? null, thread.projectId ?? null, action, expectedRevision);
+        return { ok: result.ok, text: result.message ?? "Thread work updated." };
+      },
+
       now,
     };
 
@@ -5244,21 +5145,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
        * the ambient context can never disagree.
        */
       threadIssue: (threadId) => {
-        const cached = instructionCache.get(threadId);
-        if (cached !== undefined) {
-          const alternates = alternatesByThread.get(threadId) ?? [];
-          if (alternates.length === 0) return cached;
-          const named = alternates
-            .map((entry) => safeIssueReference(entry.identifier, entry.issueId))
-            .join(", ");
-          return `${cached} The user's messages also named ${named} — the binding was NOT switched; use linear_thread_bind if one of those is the real subject.`;
-        }
-        const suggestion = suggestions.get(threadId);
-        if (suggestion !== undefined) {
-          return `This thread is not bound to a Linear issue. Best guess by title: ${safeIssueReference(suggestion.identifier, suggestion.issueId)}. Bind it with linear_thread_bind if that is right.`;
-        }
-        return "This thread is not bound to a Linear issue. Bind one with linear_thread_bind, or work by identifier with the other linear_* tools.";
+        rebuildInstruction(threadId);
+        return instructionCache.get(threadId)!;
       },
+
+      workThread: (threadId, action, issue, projectId, expectedRevision) =>
+        linkThreadExplicit(threadId, issue, projectId, action, expectedRevision),
 
       bindThread: async (threadId, idOrIdentifier, projectId) =>
         linkThreadExplicit(threadId, idOrIdentifier, projectId),

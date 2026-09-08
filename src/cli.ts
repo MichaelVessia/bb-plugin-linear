@@ -1,3 +1,4 @@
+import { WORK_ACTIONS, type WorkAction } from "./store/thread-work.js";
 import type { PluginCliCommandInfo, PluginCliContext, PluginCliResult } from "@bb/plugin-sdk";
 import { flagBoolean, parseArgs, type ParsedArgs } from "./cli-args.js";
 import { fail, json, ok, table } from "./cli-format.js";
@@ -127,10 +128,14 @@ export interface CliEnvironment {
     identifier: string | null;
     threadId: string | undefined;
   }): Promise<{ ok: boolean; message: string }>;
+  work(args: { threadId: string | undefined; action?: WorkAction; identifier?: string;
+    expectedRevision?: number }): Promise<{ ok: boolean; text: string }>;
   now(): number;
 }
 
 export const CLI_COMMANDS: readonly PluginCliCommandInfo[] = [
+  { name: "work", summary: "Read or update this thread's current, active and previous Linear work",
+    usage: "bb linear work [start|add|focus|finish|remove|clear] [ENG-123] [--thread <id>] [--revision <n>]" },
   {
     name: "status",
     summary: "Which workspace this bb is connected to, and what it has cached",
@@ -277,7 +282,8 @@ const USAGE = `bb linear — Linear issues, and the bb threads and pull requests
   bb linear inbox               What Linear wants you for
   bb linear start <ENG-123>     Start a bb thread from it
   bb linear link <ENG-123>      Link this thread to it
-  bb linear unlink              Remove this thread's link
+  bb linear unlink              Finish all work here, keeping history
+  bb linear work [action] [ENG-123]  Current, active and previous work
 
 Run any read command with --json for machine output.`;
 
@@ -605,6 +611,20 @@ export function createCliRunner(env: CliEnvironment): CliRunner {
           return result.ok ? ok(`${result.message}\n`) : fail(result.message);
         }
 
+        case "work": {
+          const action = args.positional[1];
+          if (action !== undefined && !WORK_ACTIONS.includes(action as WorkAction)) {
+            return fail(`Unknown work action. Use ${WORK_ACTIONS.join(", ")}.`);
+          }
+          const identifier = args.positional[2];
+          if (action && action !== "clear" && !identifier) return fail("Choose an issue: bb linear work " + action + " ENG-123");
+          const rawRevision = flagString(args, "revision");
+          const revision = rawRevision === undefined ? undefined : Number(rawRevision);
+          if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) return fail("Revision must be a nonnegative integer.");
+          const result = await env.work({ threadId: flagString(args, "thread") ?? ctx.threadId,
+            action: action as WorkAction | undefined, identifier, expectedRevision: revision });
+          return result.ok ? ok(result.text) : fail(result.text);
+        }
         case "link": {
           const identifier = args.positional[1];
           if (identifier === undefined) return fail("Which issue? bb linear link <ENG-123>");

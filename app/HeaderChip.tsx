@@ -1,6 +1,5 @@
 import { useCallback, type CSSProperties } from "react";
 import { useBbNavigate, useRealtime } from "@bb/plugin-sdk/app";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useAsync, useLinearRpc } from "./rpc.js";
 import { StateGlyph } from "./StateGlyph.js";
@@ -30,7 +29,7 @@ export function HeaderChip({ threadId }: { threadId: string; projectId: string |
   useRealtime("linear:data", state.reload);
 
   if (state.status !== "ready") return null;
-  const { binding, suggestion } = state.value;
+  const { binding, suggestion, activeCount, historyCount, alternates } = state.value;
 
   if (binding !== null) {
     return (
@@ -39,7 +38,7 @@ export function HeaderChip({ threadId }: { threadId: string; projectId: string |
         variant="ghost"
         className={`${toneClass(binding.tone)} h-7 gap-1.5 px-2 text-xs font-medium`}
         style={binding.glyph.color === null ? undefined : ({ "--bbl": binding.glyph.color } as CSSProperties)}
-        aria-label={`Linear issue ${binding.identifier} · ${binding.title} — ${binding.stateName}, bound via ${binding.origin}${binding.provenance === null ? "" : ` — ${binding.provenance}`}`}
+        aria-label={`${activeCount} active Linear issues. Current issue ${binding.identifier} · ${binding.title} — ${binding.stateName}, bound via ${binding.origin}${binding.provenance === null ? "" : ` — ${binding.provenance}`}`}
         onClick={() => {
           navigate.openThreadPanel({ actionId: "issue", title: binding.identifier });
         }}
@@ -49,34 +48,19 @@ export function HeaderChip({ threadId }: { threadId: string; projectId: string |
             exactly as it does in the list. */}
         <StateGlyph tone={binding.tone} glyph={binding.glyph} />
         <span className="bbl-text">{binding.identifier}</span>
+        {activeCount > 1 && <span className="text-muted-foreground">+{activeCount - 1}</span>}
       </Button>
     );
   }
 
-  if (suggestion !== null) {
+  if (suggestion !== null || alternates.length > 0 || historyCount > 0) {
     return (
-      <Button
-        size="sm"
-        variant="outline"
-        className="h-7 gap-1 border-dashed px-2 text-xs text-muted-foreground"
-        aria-label={`Looks like Linear issue ${suggestion.identifier} · ${suggestion.title} — click to bind`}
-        onClick={() => {
-          void rpc
-            .call("bindThread", { threadId, issueId: suggestion.issueId })
-            .then((result) => {
-              if (result.ok) {
-                toast.success(`Bound to ${suggestion.identifier}. Undo: bb linear unlink`);
-              } else {
-                toast.error(result.message ?? "Couldn't bind.");
-              }
-              state.reload();
-            });
-        }}
-      >
-        {suggestion.identifier}?
+      <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+        aria-label={historyCount > 0 ? `Linear: no current issue, ${historyCount} previous issues` : "Review suggested Linear issues"}
+        onClick={() => navigate.openThreadPanel({ actionId: "issue", title: "Linear work" })}>
+        {historyCount > 0 ? `Linear · ${historyCount} previous` : `${suggestion?.identifier ?? alternates[0]?.identifier}?`}
       </Button>
     );
   }
-
   return null;
 }

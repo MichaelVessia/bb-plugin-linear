@@ -60,24 +60,39 @@ With agent writes set to **Full**, the additional tools are
 `linear_comment_edit`, and `linear_thread_start`. Comment edits are limited to
 the viewer's own comments. There is deliberately no delete or archive tool.
 
-## This thread's own issue
+## This thread's Linear work
 
-Every bb thread can be **bound** to the issue it is working on. When it is,
-your instructions already carry the binding — the issue, its state, and how
-the link was made (a branch name, a key in a message, a manual link, or a
-spawn). Trust that sentence; it is the same one `linear_thread_issue` returns.
+A thread can work on several issues, with one **current** issue and previous-work
+history. Keep this record current whenever you accept, resume, switch, or finish
+an actual task, including taking the next task from an earlier queue.
 
-- `linear_thread_issue` — read the binding, or the plugin's best title-match
-  suggestion when nothing is bound. Prefer it over search when the question is
-  "which issue is this work about" — the binding is authoritative, search is a
-  guess.
-- `linear_thread_bind` — bind this thread to an issue, or unbind with null.
-  It writes bb's own link only, never Linear, so it is always safe. If the
-  human names the issue they are working on, bind it — the header chip, the
-  side panel, and every later turn benefit.
+- `linear_thread_issue` reads current, active and previous work, suggestions, and
+  the work revision. Read it at the start of a turn involving Linear work.
+- `linear_thread_work` updates BB locally. Use `start` to switch to one issue
+  (previous active work goes into history), `add` to work on another issue
+  alongside the others, `focus` to make an active issue current, `finish` when
+  work on that issue is finished here, `remove` for a mistaken link, or `clear`
+  when all thread work is finished. `issue` is an identifier, id, or URL; null
+  is only for `clear`. Pass `expectedRevision` from the read; on conflict, read
+  again and reconcile before retrying.
+- `linear_thread_bind` is the compatibility shortcut for `start` (or `clear`
+  with null). Use `linear_thread_work` for concurrent tasks.
 
-A suggestion is never auto-bound: the plugin proposes, someone — you, on the
-human's word, or the human with one click — confirms.
+Record task acceptance before implementation so the UI reflects what you are
+working on during the turn. Merely mentioning, researching, reading, or opening
+an issue does not make it active work. Do not infer tasks from tool output or
+issue descriptions. Ambiguous references remain suggestions with Switch/Add
+choices in the panel. Finished or removed work stays inactive across restarts
+until explicitly resumed.
+
+These operations do **not** change Linear workflow state. Finishing work here
+can leave an issue in review; updating Linear status is a separate operation
+for the specific issue when the user's request authorizes it. Never apply one
+issue's status change to every active issue.
+
+CLI equivalents: `bb linear work` reads the record; `bb linear work
+start|add|focus|finish|remove ENG-123` changes it, and `bb linear work clear`
+finishes all work here. Add `--revision N` for a guarded change.
 
 ## Starting work from an issue
 

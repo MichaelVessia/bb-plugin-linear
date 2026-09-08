@@ -16,10 +16,23 @@ import {
   toneSchema,
 } from "./contract.js";
 import { defineRpcContract } from "./sdk-runtime.js";
+import { WORK_ACTIONS } from "./store/thread-work.js";
 import { THREAD_ISSUES_MAX } from "./thread-issues.js";
+
+export const workIssueSchema = z.object({
+  issueId: z.string(), identifier: z.string(), title: z.string(),
+  stateName: z.string(), tone: toneSchema, glyph: glyphSpecSchema,
+  url: z.string().nullable(), origin: z.enum(["spawn", "manual", "branch", "message"]),
+  provenance: z.string().nullable(),
+});
 
 /** What the header chip and the side panel both know about a thread. */
 export const threadIssueSchema = z.object({
+  active: z.array(workIssueSchema).default([]),
+  activeCount: z.number().int().nonnegative().default(0),
+  history: z.array(workIssueSchema).default([]),
+  historyCount: z.number().int().nonnegative().default(0),
+  revision: z.number().int().nonnegative().default(0),
   /** The bound issue, or null when the thread is unbound. */
   binding: z
     .object({
@@ -100,6 +113,8 @@ export const serverRpcContract = defineRpcContract({
       threads: z.record(
         z.string(),
         z.object({
+          active: z.array(workIssueSchema).default([]),
+          activeCount: z.number().int().nonnegative().default(0),
           binding: z
             .object({
               issueId: z.string(),
@@ -126,6 +141,12 @@ export const serverRpcContract = defineRpcContract({
    *  binding, and its provenance says so. */
   bindThread: {
     input: z.object({ threadId: z.string(), issueId: z.string().nullable() }),
+    output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
+  },
+
+  updateThreadWork: {
+    input: z.object({ threadId: z.string(), action: z.enum(WORK_ACTIONS),
+      issue: z.string().min(1).nullable(), expectedRevision: z.number().int().nonnegative().optional() }),
     output: z.object({ ok: z.boolean(), message: z.string().nullable() }),
   },
 

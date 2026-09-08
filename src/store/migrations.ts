@@ -770,4 +770,30 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE comment ADD COLUMN resolving_user_id TEXT`,
   `ALTER TABLE inbox ADD COLUMN comment_id TEXT`,
   `ALTER TABLE thread_link ADD COLUMN provenance TEXT`,
+
+  // Thread work is additive: thread_link remains the current-issue projection.
+  `CREATE TABLE IF NOT EXISTS thread_work (
+     thread_id TEXT NOT NULL,
+     issue_id TEXT NOT NULL,
+     team_id TEXT NOT NULL,
+     project_id TEXT,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     origin TEXT NOT NULL,
+     provenance TEXT,
+     status TEXT NOT NULL CHECK (status IN ('active', 'previous', 'removed')),
+     PRIMARY KEY (thread_id, issue_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS thread_work_by_issue ON thread_work (issue_id, status)`,
+  `INSERT OR IGNORE INTO thread_work
+     SELECT thread_id, issue_id, team_id, project_id, created_at, created_at,
+            origin, provenance, 'active' FROM thread_link`,
+  `CREATE TABLE IF NOT EXISTS thread_work_state (
+     thread_id TEXT PRIMARY KEY,
+     revision INTEGER NOT NULL DEFAULT 0,
+     after_sequence INTEGER NOT NULL DEFAULT 0,
+     managed INTEGER NOT NULL DEFAULT 0,
+     candidates TEXT NOT NULL DEFAULT '[]'
+   )`,
+
 ];

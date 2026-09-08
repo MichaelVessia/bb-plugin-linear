@@ -1,3 +1,4 @@
+import { WORK_ACTIONS, type WorkAction } from "./store/thread-work.js";
 import { z } from "zod";
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import { crossTeamRefusal, scopeFor, type Scope } from "./bindings.js";
@@ -99,6 +100,8 @@ export interface ToolDeps {
   /** The calling thread's own binding, as a sentence an agent can act on —
    *  the one fact no Linear MCP can know, because only bb holds the link. */
   readonly threadIssue: (threadId: string) => string;
+  readonly workThread: (threadId: string, action: WorkAction, issue: string | null,
+    projectId: string | null, expectedRevision?: number) => Promise<{ ok: boolean; message: string | null }>;
   /** Bind (an id or identifier) or unbind (null) the calling thread. */
   readonly bindThread: (
     threadId: string,
@@ -120,6 +123,7 @@ const READ_TOOLS = [
   "linear_cycle_get",
   "linear_view_run",
   "linear_thread_issue",
+  "linear_thread_work",
   "linear_thread_bind",
 ] as const;
 
@@ -1042,7 +1046,7 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
   bb.agents.registerTool({
     name: "linear_thread_issue",
     description:
-      "Which Linear issue this bb thread is working on — the bound issue with its state and how the binding was made, or the plugin's best suggestion when nothing is bound yet.",
+      "Read this thread's current issue, all active issues, previous work, suggestions and work revision.",
     instructions:
       "Prefer linear_thread_issue over searching when the question is about 'the issue for this work' — the binding is authoritative and search is a guess.",
     parameters: z.object({}),
@@ -1061,9 +1065,26 @@ export function registerTools(bb: BbPluginApi, deps: ToolDeps): void {
   });
 
   bb.agents.registerTool({
+    name: "linear_thread_work",
+    description: "Record this thread's current Linear work. Start replaces active work and keeps history; add tracks concurrent work; focus changes the current issue; finish ends work here without changing Linear status; remove dismisses a mistaken link; clear finishes all work here. Read linear_thread_issue for the revision.",
+    instructions: "Call when accepting or resuming a Linear task, changing focus, or finishing work, including taking the next task from a queue. Mere mentions and issue reads are not task acceptance. Keep BB work and Linear workflow status separate.",
+    parameters: z.object({ action: z.enum(WORK_ACTIONS),
+      issue: z.string().min(1).nullable().describe("Issue identifier, id or URL. Null only for clear."),
+      expectedRevision: z.number().int().nonnegative().optional().describe("Revision from linear_thread_issue; re-read and retry on conflict."),
+    }),
+    presentation: { label: { pending: "Updating this thread's Linear work", completed: "Updated this thread's Linear work" } },
+    execute: async ({ action, issue, expectedRevision }, ctx) => {
+      if (!ctx.threadId) return { content: [{ type: "text", text: "This context has no thread." }], isError: true };
+      const result = await deps.workThread(ctx.threadId, action, issue, ctx.projectId, expectedRevision);
+      return result.ok ? result.message ?? "Thread work updated." :
+        { content: [{ type: "text", text: result.message ?? "Work change refused." }], isError: true };
+    },
+  });
+
+  bb.agents.registerTool({
     name: "linear_thread_bind",
     description:
-      "Bind this bb thread to a Linear issue (or unbind it). The binding drives the thread's header chip, the side panel, and the context every future turn receives. It writes bb's own link only — never Linear.",
+      "Set this thread's sole current Linear issue, keeping previous work in history (or clear active work with null). Use linear_thread_work to add concurrent tasks or focus one. The binding drives the thread's header chip, the side panel, and the context every future turn receives. It writes bb's own link only — never Linear.",
     parameters: z.object({
       issue: z
         .string()

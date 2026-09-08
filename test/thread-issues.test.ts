@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { THREAD_ISSUES_MAX, threadIssuesFor } from "../src/thread-issues.js";
 import { createTestStore, issue, NOW, state, team } from "./helpers/store.js";
 
@@ -42,8 +42,8 @@ describe("threadIssuesFor", () => {
     expect(result.th_1?.binding?.glyph).toMatchObject({ ring: "solid" });
     expect(result.th_1?.suggestion).toBeNull();
     expect(result.th_2?.binding).toMatchObject({ identifier: "ENG-2", stateName: "Todo", tone: "unstarted", provenance: null });
-    expect(result.th_free).toEqual({ binding: null, suggestion: { issueId: "i2", identifier: "ENG-2", title: "Second" } });
-    expect(result.th_none).toEqual({ binding: null, suggestion: null });
+    expect(result.th_free).toEqual({ active: [], activeCount: 0, binding: null, suggestion: { issueId: "i2", identifier: "ENG-2", title: "Second" } });
+    expect(result.th_none).toEqual({ active: [], activeCount: 0, binding: null, suggestion: null });
   });
 
   it("falls back to an unknown state when the issue's state is not mirrored", () => {
@@ -59,5 +59,17 @@ describe("threadIssuesFor", () => {
     const ids = Array.from({ length: THREAD_ISSUES_MAX + 5 }, (_, i) => `th_${i}`);
     const result = threadIssuesFor({ threadIds: [...ids, "th_0"], store, suggestions: new Map() });
     expect(Object.keys(result)).toHaveLength(THREAD_ISSUES_MAX);
+  });
+
+  it("includes concurrent work and shares team reads across the batch", () => {
+    const store = seeded();
+    store.changeThreadWork({ threadId: "th_1", action: "add", now: NOW + 1,
+      issue: { threadId: "th_1", issueId: "i2", teamId: "team_eng", projectId: "proj", createdAt: NOW, origin: "manual" } });
+    const states = vi.spyOn(store, "workflowStates");
+    const result = threadIssuesFor({ threadIds: ["th_1", "th_2"], store, suggestions: new Map() });
+    expect(result.th_1?.activeCount).toBe(2);
+    expect(result.th_1?.binding?.issueId).toBe("i1");
+    expect(result.th_1?.active.map((issue) => issue.issueId).sort()).toEqual(["i1", "i2"]);
+    expect(states).toHaveBeenCalledTimes(1);
   });
 });
