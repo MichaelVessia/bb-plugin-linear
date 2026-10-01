@@ -3,8 +3,11 @@ import {
   buildFacets,
   buildPanelView,
   buildThreadCandidates,
+  buildWorkingSet,
+  readPanelScope,
   type PanelDeps,
 } from "../src/panel.js";
+import { createVersionedStore, KV } from "../src/kv.js";
 import {
   groupRows,
   initialsOf,
@@ -483,6 +486,76 @@ describe("buildPanelView", () => {
     const view = buildPanelView(d, { ...query, search: "nothing matches this" });
     if (view.state.kind !== "empty-filter") throw new Error("expected empty-filter");
     expect(view.state.totalWithoutFilters).toBe(2);
+  });
+});
+
+describe("readPanelScope with sub-teams", () => {
+  // Two bound roots and one sub-team of the first: the shape of a workspace
+  // where `includeSubTeams` widened the panel past its bindings.
+  async function scoped(backfilled: readonly string[]) {
+    const store = createTestStore();
+    store.putTeams(
+      [
+        team("team_ofp", "OFP"),
+        team("team_web", "WEB"),
+        team("team_ad", "AD", { parentId: "team_ofp" }),
+      ],
+      NOW,
+    );
+    store.setBinding("proj_personal", "team_ofp", "primary", NOW);
+    store.setBinding("proj_web", "team_web", "primary", NOW);
+    for (const teamId of ["team_ofp", "team_web", "team_ad"]) {
+      store.replaceWorkflowStates(teamId, [state(`s_${teamId}`, teamId, "started", 1, "In Progress")]);
+    }
+    store.putIssues(
+      [
+        issue({ id: "ad1", identifier: "AD-1", teamId: "team_ad", stateId: "s_team_ad" }),
+        issue({ id: "web1", identifier: "WEB-1", teamId: "team_web", stateId: "s_team_web" }),
+      ],
+      NOW,
+    );
+    const values = new Map<string, unknown>(
+      backfilled.map((teamId) => [KV.backfilled(teamId), { v: 1, at: NOW, issues: 1 }]),
+    );
+    const kv = createVersionedStore({
+      get: async (key: string) => values.get(key),
+    } as never);
+    const scope = await readPanelScope({ store, kv, includeSubTeams: true });
+    const deps: PanelDeps = {
+      store,
+      now: () => NOW,
+      hasCredential: true,
+      notice: null,
+      ...scope,
+    };
+    return deps;
+  }
+
+  const allTeams = {
+    team: null,
+    grouping: "state" as const,
+    sort: "updated" as const,
+    search: "",
+    filters: NO_FILTERS,
+  };
+
+  it("leaves first sync under All bound teams once every team in scope has backfilled", async () => {
+    // The backfill writes one marker per expanded team, sub-teams included.
+    const deps = await scoped(["team_ofp", "team_web", "team_ad"]);
+
+    expect(deps.boundTeamIds).toEqual(["team_ofp", "team_web", "team_ad"]);
+    expect(buildWorkingSet(deps, null).kind).not.toBe("first-sync");
+    const view = buildPanelView(deps, allTeams);
+    expect(view.state.kind).toBe("rows");
+    if (view.state.kind !== "rows") return;
+    expect(view.state.groups.flatMap((group) => group.rows.map((row) => row.identifier)).sort())
+      .toEqual(["AD-1", "WEB-1"]);
+  });
+
+  it("still reads as first sync while a sub-team's backfill is outstanding", async () => {
+    const deps = await scoped(["team_ofp", "team_web"]);
+
+    expect(buildWorkingSet(deps, null).kind).toBe("first-sync");
   });
 });
 

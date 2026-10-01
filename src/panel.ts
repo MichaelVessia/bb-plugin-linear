@@ -71,6 +71,10 @@ export interface PanelDeps {
 
 /**
  * The panel's teams, and which of them have finished their backfill.
+ *
+ * Both come from the same expanded list. With sub-teams included, a marker
+ * read over the bound roots alone never covered the sub-teams, so the Working
+ * set under "All bound teams" stayed on first sync forever.
  */
 export async function readPanelScope(input: {
   readonly store: Pick<Store, "boundTeamIds" | "teams">;
@@ -83,7 +87,7 @@ export async function readPanelScope(input: {
     input.includeSubTeams,
   );
   const records = await Promise.all(
-    input.store.boundTeamIds().map(async (teamId) => ({
+    boundTeamIds.map(async (teamId) => ({
       teamId,
       record: await input.kv.readOptional(KV.backfilled(teamId), backfilledSchema),
     })),
