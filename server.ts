@@ -13,7 +13,7 @@ import {
 import { buildBindingsView, expandTeams, type ProjectSummary } from "./src/bindings.js";
 import { loadOlderActivity, readPanePreferences } from "./src/activity.js";
 import { CLI_COMMANDS, createCliRunner, type CliEnvironment } from "./src/cli.js";
-import { createVersionedStore, KV } from "./src/kv.js";
+import { backfilledSchema, createVersionedStore, KV } from "./src/kv.js";
 import { authHeader, patFromSetting } from "./src/linear/credential.js";
 import {
   configuredSlots,
@@ -58,6 +58,7 @@ import {
   buildPanelView,
   buildRowViews,
   buildWorkingSet,
+  readPanelScope,
   type PanelDeps,
 } from "./src/panel.js";
 import type { IssueRow } from "./src/store/rows.js";
@@ -216,7 +217,6 @@ const webhookRecordSchema = z.object({
 const LEGACY_WEBHOOK_SECRET_KEY = "webhook-signing-secret";
 const webhookSecretKey = (teamId: string): string => `webhook-signing-secret:${teamId}`;
 const sortPreferenceSchema = z.object({ v: z.literal(1), sort: z.string() });
-const backfilledSchema = z.object({ v: z.literal(1), at: z.number(), issues: z.number() });
 
 export function createPlugin(makeClient: LinearClientFactory = createLinearClient) {
   return async function linearPlugin(bb: BbPluginApi): Promise<void> {
@@ -797,18 +797,6 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       return run;
     }
 
-    async function backfilledTeamIds(): Promise<Set<string>> {
-      const records = await Promise.all(
-        store.boundTeamIds().map(async (teamId) => ({
-          teamId,
-          record: await kv.readOptional(KV.backfilled(teamId), backfilledSchema),
-        })),
-      );
-      return new Set(
-        records.filter((entry) => entry.record !== undefined).map((entry) => entry.teamId),
-      );
-    }
-
     /* ── What bb knows that Linear cannot ────────────────────────────────── */
     /*
      * Which threads are running right now, kept in memory from the six thread
@@ -901,17 +889,17 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
     async function panelDeps(includeBbFacts = false): Promise<PanelDeps> {
       const values = await settings.get();
       const hasCredential = values.apiKey !== undefined && values.apiKey.trim() !== "";
-      const boundTeamIds = expandTeams(
-        store.boundTeamIds(),
-        store.teams(),
-        values.includeSubTeams,
-      );
+      const { boundTeamIds, backfilledTeamIds } = await readPanelScope({
+        store,
+        kv,
+        includeSubTeams: values.includeSubTeams,
+      });
       return {
         store,
         now,
         hasCredential,
         boundTeamIds,
-        backfilledTeamIds: await backfilledTeamIds(),
+        backfilledTeamIds,
         notice: panelNotice(),
         ...(includeBbFacts
           ? {

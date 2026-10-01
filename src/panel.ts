@@ -5,7 +5,9 @@ import type {
   PanelView,
   WorkingSetView,
 } from "./contract.js";
+import { expandTeams } from "./bindings.js";
 import { todayAsTimelessDate } from "./format.js";
+import { backfilledSchema, KV, type VersionedStore } from "./kv.js";
 import {
   selectPanelState,
   selectRow,
@@ -65,6 +67,33 @@ export interface PanelDeps {
   /** What bb knows that Linear cannot. Empty until the milestone that fills
    *  it; an absent fact renders as no fact rather than as a wrong one. */
   readonly bbFacts?: ReadonlyMap<string, BbFact>;
+}
+
+/**
+ * The panel's teams, and which of them have finished their backfill.
+ */
+export async function readPanelScope(input: {
+  readonly store: Pick<Store, "boundTeamIds" | "teams">;
+  readonly kv: Pick<VersionedStore, "readOptional">;
+  readonly includeSubTeams: boolean;
+}): Promise<Pick<PanelDeps, "boundTeamIds" | "backfilledTeamIds">> {
+  const boundTeamIds = expandTeams(
+    input.store.boundTeamIds(),
+    input.store.teams(),
+    input.includeSubTeams,
+  );
+  const records = await Promise.all(
+    input.store.boundTeamIds().map(async (teamId) => ({
+      teamId,
+      record: await input.kv.readOptional(KV.backfilled(teamId), backfilledSchema),
+    })),
+  );
+  return {
+    boundTeamIds,
+    backfilledTeamIds: new Set(
+      records.filter((entry) => entry.record !== undefined).map((entry) => entry.teamId),
+    ),
+  };
 }
 
 /**

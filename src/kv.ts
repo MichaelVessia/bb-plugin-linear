@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z } from "zod";
 import type { PluginKvStorage } from "@bb/plugin-sdk";
 
 /**
@@ -122,3 +122,6 @@ export const KV = {
    *  scope behind the user's back; a later manual bind clears it. */
   autolinkDeclined: (projectId: string) => `autolink:declined:${projectId}`,
 } as const;
+
+/** The value under `KV.backfilled`. */
+export const backfilledSchema = z.object({ v: z.literal(1), at: z.number(), issues: z.number() });
