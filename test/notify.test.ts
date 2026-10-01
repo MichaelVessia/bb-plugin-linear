@@ -374,7 +374,71 @@ describe("deliverToPeer", () => {
   });
 });
 
+const BOUND: ReadonlySet<string> = new Set(["team_eng"]);
+
 describe("the inbox", () => {
+  function openOf(
+    row: ReturnType<typeof toInboxRow>,
+    issue: { identifier: string; title: string; teamId: string } | null,
+  ) {
+    return selectInboxItem({
+      row,
+      actor: null,
+      issue,
+      blockers: [],
+      now: NOW,
+      readableTeamIds: BOUND,
+    }).open;
+  }
+
+  it("opens an issue bb reads in bb, at the comment it names", () => {
+    const row = toInboxRow(node({ commentId: "comment_1" }), NOW, "ws");
+    expect(openOf(row, { identifier: "ENG-42", title: "x", teamId: "team_eng" })).toEqual({
+      kind: "issue",
+      ref: "ENG-42",
+      commentId: "comment_1",
+    });
+  });
+
+  it("opens a readable issue the mirror has not seen yet by its id", () => {
+    const row = toInboxRow(node(), NOW, "ws");
+    expect(openOf(row, null)).toEqual({ kind: "issue", ref: "i_1", commentId: null });
+  });
+
+  it("sends an issue in a team bb does not read to Linear instead of a refusal", () => {
+    const row = toInboxRow(node({ team: { id: "team_other" } }), NOW, "ws");
+    expect(openOf(row, { identifier: "OTH-7", title: "x", teamId: "team_other" })).toEqual({
+      kind: "linear",
+      url: "https://linear.app/acme/inbox/n_1",
+    });
+  });
+
+  it("sends a notification with no issue to Linear", () => {
+    const row = toInboxRow(
+      node({ issueId: undefined, issue: undefined, team: undefined, category: "system" }),
+      NOW,
+      "ws",
+    );
+    expect(openOf(row, null)).toEqual({ kind: "linear", url: "https://linear.app/acme/inbox/n_1" });
+  });
+
+  it("offers no open action for a row with nowhere to go", () => {
+    const row = { ...toInboxRow(node(), NOW, "ws"), issueId: null, url: null };
+    expect(openOf(row, null)).toEqual({ kind: "none" });
+  });
+
+  it("marks only the named rows read, and keeps them listed", () => {
+    const store = createTestStore();
+    const first = toInboxRow(node(), NOW, "ws");
+    const second = toInboxRow(node({ id: "n_2", groupingKey: "g_2" }), NOW, "ws");
+    store.putInbox([first, second]);
+
+    store.markInboxSeen([first.key], NOW);
+
+    expect(store.unseenInboxCount()).toBe(1);
+    expect(store.inbox().map((row) => row.key).sort()).toEqual([first.key, second.key].sort());
+  });
+
   it("persists the notification comment id for Slice C deep links", () => {
     const store = createTestStore();
     const row = toInboxRow(node({ commentId: "comment_1" }), NOW, "ws");
@@ -387,9 +451,10 @@ describe("the inbox", () => {
     const view = selectInboxItem({
       row,
       actor: member("u_kai", "Kai Rivers"),
-      issue: { identifier: "ENG-42", title: "Fix the flaky login test" },
+      issue: { identifier: "ENG-42", title: "Fix the flaky login test", teamId: "team_eng" },
       blockers: [],
       now: NOW,
+      readableTeamIds: BOUND,
     });
     expect(view.text).toBe("Kai Rivers assigned you ENG-42 · Fix the flaky login test.");
   });
@@ -399,23 +464,38 @@ describe("the inbox", () => {
     const view = selectInboxItem({
       row,
       actor: null,
-      issue: { identifier: "ENG-42", title: "x" },
+      issue: { identifier: "ENG-42", title: "x", teamId: "team_eng" },
       blockers: ["ENG-40", "ENG-41"],
       now: NOW,
+      readableTeamIds: BOUND,
     });
     expect(view.text).toBe("ENG-42 is blocked by ENG-40 and ENG-41.");
   });
 
   it("falls back to Linear's own words when it does not know the actor", () => {
     const row = toInboxRow(node(), NOW, "ws");
-    const view = selectInboxItem({ row, actor: null, issue: null, blockers: [], now: NOW });
+    const view = selectInboxItem({
+      row,
+      actor: null,
+      issue: null,
+      blockers: [],
+      now: NOW,
+      readableTeamIds: BOUND,
+    });
     expect(view.text).toBe("Kai assigned you ENG-42");
   });
 
   it("keeps a row read elsewhere in the list but out of the unseen count", () => {
     // A row disappearing under your cursor is worse than a stale dot.
     const read = { ...toInboxRow(node(), NOW, "ws"), linearReadAt: NOW };
-    const view = selectInboxItem({ row: read, actor: null, issue: null, blockers: [], now: NOW });
+    const view = selectInboxItem({
+      row: read,
+      actor: null,
+      issue: null,
+      blockers: [],
+      now: NOW,
+      readableTeamIds: BOUND,
+    });
     expect(view.unseen).toBe(false);
     expect(unseenCount([read])).toBe(0);
     expect(unseenCount([toInboxRow(node(), NOW, "ws")])).toBe(1);

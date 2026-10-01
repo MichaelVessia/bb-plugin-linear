@@ -178,4 +178,5 @@ export const serverRpcContract = defineRpcContract({
   inbox: legacyContract.inbox,
   inboxSummary: legacyContract.inboxSummary,
   dismissInbox: legacyContract.dismissInbox,
+  markInboxRead: legacyContract.markInboxRead,
 });

@@ -652,8 +652,11 @@ export const inboxItemSchema = z.object({
   kind: z.enum(["assigned", "comment", "blocked", "unblocked", "other"]),
   text: z.string(),
   identifier: z.string().nullable(),
-  issueId: z.string().nullable(),
-  commentId: z.string().nullable(),
+  open: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("issue"), ref: z.string(), commentId: z.string().nullable() }),
+    z.object({ kind: z.literal("linear"), url: z.string() }),
+    z.object({ kind: z.literal("none") }),
+  ]),
   url: z.string().nullable(),
   /** The workspace name, only when more than one is connected — a merged
    *  inbox without labels is a guessing game, and labels on a single
@@ -1086,6 +1089,12 @@ export const rpcContract = defineRpcContract({
   dismissInbox: {
     input: z.object({ keys: z.array(z.string()), all: z.boolean().optional() }).strict(),
     output: z.object({ ok: z.boolean(), dismissed: z.number() }),
+  },
+
+  /** Marks rows read in bb only. Linear's own read state is not changed. */
+  markInboxRead: {
+    input: z.object({ keys: z.array(z.string()) }).strict(),
+    output: z.object({ ok: z.boolean(), marked: z.number() }),
   },
 
   /** Everything the composer banner and the thread header chip draw, for one

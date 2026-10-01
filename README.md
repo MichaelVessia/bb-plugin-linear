@@ -100,6 +100,10 @@ Your Linear inbox as a segment with a badge: assignments, replies, mentions
 and blockers, dismissible row by row. A toast fires only when something *new*
 arrives — never for what was already waiting when you looked.
 
+A row about an issue in a team bb reads opens that issue in bb. Any other row
+opens in Linear. Read and dismiss change bb only: to mark read, snooze or
+unsubscribe in Linear itself, open the notification in Linear.
+
 <p align="center">
   <img src="./assets/readme/inbox.png" alt="The inbox empty state" width="900">
 </p>

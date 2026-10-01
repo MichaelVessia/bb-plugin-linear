@@ -56,13 +56,22 @@ export function toInboxRow(
   };
 }
 
+/**
+ * Where a row's primary action goes. An issue opens in bb only when its team
+ * is one bb reads; anything else opens Linear's own inbox entry, because a
+ * bb detail pane for it would only refuse.
+ */
+export type InboxOpen =
+  | { readonly kind: "issue"; readonly ref: string; readonly commentId: string | null }
+  | { readonly kind: "linear"; readonly url: string }
+  | { readonly kind: "none" };
+
 export interface InboxItemView {
   readonly key: string;
   readonly kind: NotificationKind;
   readonly text: string;
   readonly identifier: string | null;
-  readonly issueId: string | null;
-  readonly commentId: string | null;
+  readonly open: InboxOpen;
   readonly url: string | null;
   /** Set only when more than one workspace is connected. */
   readonly workspace: string | null;
@@ -82,9 +91,15 @@ export interface InboxItemView {
 export function selectInboxItem(input: {
   readonly row: InboxRow;
   readonly actor: MemberRow | null;
-  readonly issue: { readonly identifier: string; readonly title: string } | null;
+  readonly issue: {
+    readonly identifier: string;
+    readonly title: string;
+    readonly teamId: string;
+  } | null;
   readonly blockers: readonly string[];
   readonly now: number;
+  /** The teams bb reads, which decides whether the issue opens here. */
+  readonly readableTeamIds: ReadonlySet<string>;
   /** The workspace name, only when more than one is connected — naming the
    *  only workspace on every row is noise, and a merged inbox without labels
    *  is a guessing game. */
@@ -132,8 +147,7 @@ export function selectInboxItem(input: {
     kind: input.row.kind,
     text,
     identifier: input.issue?.identifier ?? null,
-    issueId: input.row.issueId,
-    commentId: input.row.commentId,
+    open: openFor(input.row, input.issue, input.readableTeamIds),
     url: input.row.url,
     workspace: input.workspace ?? null,
     age: formatRelativeCompact(input.row.createdAt, input.now),
@@ -142,6 +156,18 @@ export function selectInboxItem(input: {
     // the next tick without removing the row.
     unseen: input.row.seenAt === null && input.row.linearReadAt === null,
   };
+}
+
+function openFor(
+  row: InboxRow,
+  issue: { readonly identifier: string; readonly teamId: string } | null,
+  readableTeamIds: ReadonlySet<string>,
+): InboxOpen {
+  const teamId = issue?.teamId ?? row.teamId;
+  if (row.issueId !== null && teamId !== null && readableTeamIds.has(teamId)) {
+    return { kind: "issue", ref: issue?.identifier ?? row.issueId, commentId: row.commentId };
+  }
+  return row.url === null ? { kind: "none" } : { kind: "linear", url: row.url };
 }
 
 /** Capped at 99+ because the difference between 100 and 340 has never changed

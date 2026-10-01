@@ -3485,7 +3485,10 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       return { issue };
     }
 
-    function projectInboxRows(rows: ReturnType<Store["inbox"]>) {
+    function projectInboxRows(
+      rows: ReturnType<Store["inbox"]>,
+      readableTeamIds: ReadonlySet<string>,
+    ) {
       const members = new Map(
         store
           .membersByIds(
@@ -3519,9 +3522,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           },
           actor: row.actorId === null ? null : (members.get(row.actorId) ?? null),
           issue:
-            issue === null ? null : { identifier: issue.identifier, title: issue.title },
+            issue === null
+              ? null
+              : { identifier: issue.identifier, title: issue.title, teamId: issue.teamId },
           blockers: [],
           now: now(),
+          readableTeamIds,
           workspace: workspaceNames.get(row.workspaceId) ?? null,
         });
       });
@@ -4193,7 +4199,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       async inbox({ markSeen }) {
         lastFrontendReadAt = now();
         const rows = store.inbox({ limit: 200 });
-        const items = projectInboxRows(rows);
+        const items = projectInboxRows(rows, new Set(await readableTeamIds()));
 
         // Opening the segment marks visible rows seen. **Seen is not
         // handled**: a row stays until it is dismissed.
@@ -4210,7 +4216,8 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
 
       async inboxSummary() {
         lastFrontendReadAt = now();
-        const newest = projectInboxRows(store.inbox({ limit: 1 }))[0] ?? null;
+        const newest =
+          projectInboxRows(store.inbox({ limit: 1 }), new Set(await readableTeamIds()))[0] ?? null;
         return {
           unseen: store.unseenInboxCount(),
           newest:
@@ -4225,6 +4232,12 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         store.dismissInbox(target, now());
         publish("linear:inbox");
         return { ok: true, dismissed: target.length };
+      },
+
+      async markInboxRead({ keys }) {
+        store.markInboxSeen(keys, now());
+        publish("linear:inbox");
+        return { ok: true, marked: keys.length };
       },
     });
 
@@ -4971,7 +4984,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         const rows = store.inbox({ limit: 50 });
         if (rows.length === 0) return { ok: true, text: "Nothing is waiting for you in Linear." };
 
-        const lines = projectInboxRows(rows).map((view) => {
+        const lines = projectInboxRows(rows, new Set(await readableTeamIds())).map((view) => {
           return [view.unseen ? "●" : " ", view.age, view.text];
         });
         return {
