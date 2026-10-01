@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useBbNavigate, useRealtime } from "@bb/plugin-sdk/app";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { Icon } from "@/components/ui/icon";
 import type { InboxItemView } from "../src/contract.js";
 import { formatBadgeCount } from "../src/format.js";
-import { safeHref } from "./href.js";
+import { InboxList } from "./InboxList.js";
 import { useAsync, useLinearRpc } from "./rpc.js";
 
 /**
@@ -14,15 +12,15 @@ import { useAsync, useLinearRpc } from "./rpc.js";
  * This is a notification's **home**. The homepage section and the composer
  * banner are echoes of it, and nothing else carries a count.
  *
- * The seen/dismiss model, stated so it cannot drift: opening the segment marks
- * visible rows seen, and a row stays until it is dismissed — so **seen is not
- * handled**. A row whose Linear notification has been read elsewhere loses its
- * dot on the next tick but does not vanish, because a row disappearing under
- * your cursor is worse than a stale dot.
+ * A row is unread until you open it here, mark it read, or read it in Linear.
+ * Opening the segment does not mark anything read: when it did, every row was
+ * read before you could act on it, and Mark read never appeared. A row stays
+ * until it is dismissed, because a row disappearing under your cursor is worse
+ * than a stale dot.
  *
  * Read and dismiss are bb's own state. The plugin keeps no Linear notification
  * id, so it cannot mark read, snooze or archive anything in Linear's inbox, and
- * the footer says so instead of offering those actions.
+ * the toolbar says so instead of offering those actions.
  */
 export function InboxSegment() {
   const rpc = useLinearRpc();
@@ -34,38 +32,37 @@ export function InboxSegment() {
   );
   useRealtime("linear:inbox", inbox.reload);
 
-  // Opening the segment is what marks rows seen. Deliberately a separate call
-  // from the read: a refetch triggered by the poller must not mark anything
-  // seen behind the user's back.
-  useEffect(() => {
-    void rpc.call("inbox", { markSeen: true });
-  }, [rpc]);
-
   const dismiss = useCallback(
-    async (keys: string[], all = false) => {
-      await rpc.call("dismissInbox", { keys, all });
-      inbox.reload();
+    (keys: string[]) => {
+      rpc
+        .call("dismissInbox", { keys })
+        .then(inbox.reload, (error: unknown) => {
+          toast.error(error instanceof Error ? error.message : "Couldn't dismiss.");
+        });
     },
-    [rpc, inbox],
+    [rpc, inbox.reload],
   );
 
   const markRead = useCallback(
-    async (keys: string[]) => {
-      await rpc.call("markInboxRead", { keys });
-      inbox.reload();
+    (keys: string[]) => {
+      rpc
+        .call("markInboxRead", { keys })
+        .then(inbox.reload, (error: unknown) => {
+          toast.error(error instanceof Error ? error.message : "Couldn't mark read.");
+        });
     },
-    [rpc, inbox],
+    [rpc, inbox.reload],
   );
 
-  const openItem = useCallback(
+  const open = useCallback(
     (item: InboxItemView) => {
+      if (item.unseen) markRead([item.key]);
       if (item.open.kind !== "issue") return;
       const issuePath = `i/${item.open.ref}`;
       navigate.toPluginPanel("linear", {
         subPath:
           item.open.commentId === null ? issuePath : `${issuePath}/c/${item.open.commentId}`,
       });
-      if (item.unseen) void markRead([item.key]);
     },
     [navigate, markRead],
   );
@@ -100,165 +97,7 @@ export function InboxSegment() {
     );
   }
 
-  const seen = items.filter((item) => !item.unseen);
-  const unseen = items.filter((item) => item.unseen);
-
-  return (
-    <div className="flex h-full flex-col">
-      <ul className="bbl-scroller w-full max-w-[56rem] flex-1 overflow-y-auto px-1 pb-3">
-        {items.map((item) => (
-          <li
-            key={item.key}
-            className="bbl-row group flex items-center gap-2.5 rounded-md py-1.5 pl-2 pr-1 hover:bg-state-hover"
-          >
-            {/* Unseen rows carry a dot. The space is reserved either way, so
-                rows do not shift horizontally as they are read. */}
-            <span
-              className={`size-1.5 shrink-0 rounded-full ${item.unseen ? "bg-primary" : "bg-transparent"}`}
-              aria-hidden
-            />
-
-            <InboxItemLabel item={item} onOpen={openItem} />
-
-            {/* The age and the dismiss button share one cell and crossfade,
-                so approaching a row never moves anything in it. */}
-            <span className="grid shrink-0 place-items-center">
-              <span className="bbl-row-meta col-start-1 row-start-1 w-7 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                {item.age}
-              </span>
-              <span className="bbl-row-actions col-start-1 row-start-1 flex items-center">
-                {item.unseen ? (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-6"
-                    aria-label={`Mark read in bb: ${item.text}`}
-                    onClick={() => void markRead([item.key])}
-                  >
-                    <Icon name="Check" className="size-3.5" aria-hidden />
-                  </Button>
-                ) : null}
-                {item.open.kind === "issue" && safeHref(item.url) !== undefined ? (
-                  <Button variant="ghost" size="icon" className="size-6" asChild>
-                    <a
-                      href={safeHref(item.url)}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label={`Open in Linear: ${item.text}`}
-                      title="Open in Linear"
-                    >
-                      <Icon name="ExternalLink" className="size-3.5" aria-hidden />
-                    </a>
-                  </Button>
-                ) : null}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6"
-                  aria-label={`Dismiss from bb: ${item.text}`}
-                  onClick={() => void dismiss([item.key])}
-                >
-                  <Icon name="CircleX" className="size-3.5" aria-hidden />
-                </Button>
-              </span>
-            </span>
-          </li>
-        ))}
-      </ul>
-
-      <div className="space-y-1 border-t border-border px-2 py-1.5">
-        {unseen.length > 0 || seen.length > 0 ? (
-          <div className="flex items-center gap-1">
-            {unseen.length > 0 ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => void markRead(unseen.map((item) => item.key))}
-              >
-                Mark {unseen.length} read
-              </Button>
-            ) : null}
-            {seen.length > 0 ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => void dismiss(seen.map((item) => item.key))}
-              >
-                Dismiss {seen.length} seen
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-        <p className="px-2 text-[11px] leading-relaxed text-muted-foreground">
-          Read and dismiss change bb only. To mark read, snooze or unsubscribe in Linear, open
-          the notification in Linear.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/**
- * The row's text, as the control its open target allows: an issue bb reads
- * opens here, anything else opens Linear, and a row with neither is text.
- */
-function InboxItemLabel({
-  item,
-  onOpen,
-}: {
-  item: InboxItemView;
-  onOpen: (item: InboxItemView) => void;
-}) {
-  const content = (
-    <>
-      {/* Weight rather than colour carries "unread": a muted row is
-          already how everything else says "less important", and using
-          it twice makes neither reading reliable. */}
-      <span className={item.unseen ? "font-medium text-foreground" : "text-muted-foreground"}>
-        {item.text}
-      </span>
-      {/* Only present with a second workspace connected — a merged
-          inbox without labels is a guessing game, and labels on a
-          single workspace are noise. */}
-      {item.workspace !== null ? (
-        <span className="ml-1.5 rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
-          {item.workspace}
-        </span>
-      ) : null}
-    </>
-  );
-  const className = "min-w-0 flex-1 truncate text-left text-[13px]";
-
-  if (item.open.kind === "issue") {
-    return (
-      <button type="button" className={className} onClick={() => onOpen(item)}>
-        {content}
-      </button>
-    );
-  }
-  const href = item.open.kind === "linear" ? safeHref(item.open.url) : undefined;
-  if (href !== undefined) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        className={className}
-        title="Not in a team bb reads. Opens in Linear."
-      >
-        {content}
-        <Icon
-          name="ExternalLink"
-          className="ml-1 inline size-3 align-[-1px] text-muted-foreground"
-          aria-hidden
-        />
-        <span className="sr-only"> (opens in Linear)</span>
-      </a>
-    );
-  }
-  return <span className={className}>{content}</span>;
+  return <InboxList items={items} actions={{ open, markRead, dismiss }} />;
 }
 
 /** The count on the segment label. Capped at 99+, because the difference

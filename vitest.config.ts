@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 /**
@@ -10,6 +11,11 @@ import { defineConfig } from "vitest/config";
  * Linear workspace CI does not have.
  */
 export default defineConfig({
+  // The app's `@/components/...` imports, so a rendering test can load the
+  // same vendored controls the plugin build bundles.
+  resolve: {
+    alias: [{ find: /^@\//, replacement: fileURLToPath(new URL("./", import.meta.url)) }],
+  },
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],

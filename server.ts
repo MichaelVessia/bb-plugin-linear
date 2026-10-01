@@ -4196,21 +4196,10 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         }
       },
 
-      async inbox({ markSeen }) {
+      async inbox() {
         lastFrontendReadAt = now();
         const rows = store.inbox({ limit: 200 });
         const items = projectInboxRows(rows, new Set(await readableTeamIds()));
-
-        // Opening the segment marks visible rows seen. **Seen is not
-        // handled**: a row stays until it is dismissed.
-        if (markSeen === true) {
-          store.markInboxSeen(
-            rows.filter((row) => row.seenAt === null).map((row) => row.key),
-            now(),
-          );
-          publish("linear:inbox");
-        }
-
         return { items, unseen: store.unseenInboxCount() };
       },
 

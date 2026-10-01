@@ -1075,7 +1075,7 @@ export const rpcContract = defineRpcContract({
 
   /** The Inbox segment, and the count every other surface echoes. */
   inbox: {
-    input: z.object({ markSeen: z.boolean().optional() }).strict(),
+    input: z.object({}).strict(),
     output: inboxViewSchema,
   },
 

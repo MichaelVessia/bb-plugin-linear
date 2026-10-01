@@ -215,6 +215,20 @@
 }
 
 /*
+ * Inbox actions are always visible, so a narrow panel drops their words and
+ * keeps the icons. Measured on the inbox, not the viewport: the panel can be
+ * narrow in a wide window.
+ */
+.bbl-inbox {
+  container-type: inline-size;
+}
+@container (max-width: 30rem) {
+  .bbl-inbox-action-label {
+    display: none;
+  }
+}
+
+/*
  * ── Section anchors ──────────────────────────────────────────────────────────
  *
  * A group heading in a scrolling list has one job: tell you where you are
