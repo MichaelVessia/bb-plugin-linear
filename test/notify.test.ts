@@ -10,7 +10,7 @@ import { selectInboxItem, toInboxRow, unseenCount } from "../src/notify/inbox.js
 import { claimAndSend, deliverToPeer, type PeerDeps } from "../src/notify/deliver.js";
 import { readAllNotifications } from "../src/notify/pages.js";
 import type { NotificationNode } from "../src/linear/types.js";
-import { createTestStore, member, NOW } from "./helpers/store.js";
+import { createTestStore, issue, member, NOW } from "./helpers/store.js";
 
 function node(overrides: Partial<NotificationNode> = {}): NotificationNode {
   return {
@@ -395,9 +395,39 @@ describe("the inbox", () => {
     const row = toInboxRow(node({ commentId: "comment_1" }), NOW, "ws");
     expect(openOf(row, { identifier: "ENG-42", title: "x", teamId: "team_eng" })).toEqual({
       kind: "issue",
-      ref: "ENG-42",
+      ref: "i_1",
       commentId: "comment_1",
     });
+  });
+
+  it("opens the notified issue when two workspaces share its identifier", () => {
+    const store = createTestStore();
+    store.putIssues(
+      [
+        issue({ id: "i_a", identifier: "ENG-42", teamId: "team_eng" }),
+        issue({ id: "i_b", identifier: "ENG-42", teamId: "team_eng2" }),
+      ],
+      NOW,
+    );
+    const readable = new Set(["team_eng", "team_eng2"]);
+    for (const [issueId, teamId] of [["i_a", "team_eng"], ["i_b", "team_eng2"]] as const) {
+      const row = toInboxRow(
+        node({ id: `n_${issueId}`, groupingKey: `g_${issueId}`, issueId, team: { id: teamId } }),
+        NOW,
+        "ws",
+      );
+      const open = selectInboxItem({
+        row,
+        actor: null,
+        issue: { identifier: "ENG-42", title: "x", teamId },
+        blockers: [],
+        now: NOW,
+        readableTeamIds: readable,
+      }).open;
+      expect(open.kind).toBe("issue");
+      if (open.kind !== "issue") continue;
+      expect(store.issue(open.ref)?.id).toBe(issueId);
+    }
   });
 
   it("opens a readable issue the mirror has not seen yet by its id", () => {

@@ -160,12 +160,14 @@ export function selectInboxItem(input: {
 
 function openFor(
   row: InboxRow,
-  issue: { readonly identifier: string; readonly teamId: string } | null,
+  issue: { readonly teamId: string } | null,
   readableTeamIds: ReadonlySet<string>,
 ): InboxOpen {
   const teamId = issue?.teamId ?? row.teamId;
   if (row.issueId !== null && teamId !== null && readableTeamIds.has(teamId)) {
-    return { kind: "issue", ref: issue?.identifier ?? row.issueId, commentId: row.commentId };
+    // The id, not the identifier: two connected workspaces can both have an
+    // ENG-42, and an identifier lookup would open whichever it finds first.
+    return { kind: "issue", ref: row.issueId, commentId: row.commentId };
   }
   return row.url === null ? { kind: "none" } : { kind: "linear", url: row.url };
 }
