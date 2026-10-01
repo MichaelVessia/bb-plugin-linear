@@ -1501,9 +1501,15 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
       });
     }
 
+    /** The teams the panel lists, so every issue it lists also opens. */
+    async function readableTeamIds(): Promise<string[]> {
+      const values = await settings.get();
+      return expandTeams(store.boundTeamIds(), store.teams(), values.includeSubTeams);
+    }
+
     async function detailFor(id: string, advanceOpened = false): Promise<DetailResult> {
       const issue = store.issue(id) ?? store.issueByIdentifier(id);
-      const readable = store.boundTeamIds();
+      const readable = await readableTeamIds();
       pruneDetailFetches();
       if (issue === null) {
         const attempt = detailFetches.get(id);
@@ -2077,7 +2083,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
           directCandidate: direct === null ? null : candidate(direct),
           identifierCandidates:
             direct === null ? store.issuesByIdentifier(issueName).map(candidate) : [],
-          readableTeamIds: store.boundTeamIds(),
+          readableTeamIds: await readableTeamIds(),
           primarySlot: PRIMARY_SLOT,
           credentialSlots: CREDENTIAL_SLOTS,
         });
@@ -3634,7 +3640,7 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         if (
           issue === null ||
           issueNeedsRefresh(issue) ||
-          !store.boundTeamIds().includes(issue.teamId)
+          !(await readableTeamIds()).includes(issue.teamId)
         ) {
           return { ok: false, hasOlder: false };
         }
