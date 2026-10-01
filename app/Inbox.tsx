@@ -54,6 +54,14 @@ export function InboxSegment() {
     [rpc, inbox.reload],
   );
 
+  const markAllRead = useCallback(() => {
+    rpc
+      .call("markInboxRead", { keys: [], all: true })
+      .then(inbox.reload, (error: unknown) => {
+        toast.error(error instanceof Error ? error.message : "Couldn't mark read.");
+      });
+  }, [rpc, inbox.reload]);
+
   const open = useCallback(
     (item: InboxItemView) => {
       if (item.unseen) markRead([item.key]);
@@ -74,7 +82,7 @@ export function InboxSegment() {
     return <p className="p-4 text-sm text-destructive">{inbox.message}</p>;
   }
 
-  const { items } = inbox.value;
+  const { items, unseen } = inbox.value;
 
   if (items.length === 0) {
     /* An empty inbox is a good outcome, so it says so and then teaches what
@@ -97,7 +105,13 @@ export function InboxSegment() {
     );
   }
 
-  return <InboxList items={items} actions={{ open, markRead, dismiss }} />;
+  return (
+    <InboxList
+      items={items}
+      unreadTotal={unseen}
+      actions={{ open, markRead, markAllRead, dismiss }}
+    />
+  );
 }
 
 /** The count on the segment label. Capped at 99+, because the difference

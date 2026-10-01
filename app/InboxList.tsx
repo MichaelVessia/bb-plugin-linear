@@ -6,6 +6,8 @@ import { safeHref } from "./href.js";
 export interface InboxActions {
   open: (item: InboxItemView) => void;
   markRead: (keys: string[]) => void;
+  /** Every unread row, including those past the page shown here. */
+  markAllRead: () => void;
   dismiss: (keys: string[]) => void;
 }
 
@@ -20,12 +22,16 @@ export interface InboxActions {
  */
 export function InboxList({
   items,
+  unreadTotal,
   actions,
 }: {
   items: readonly InboxItemView[];
+  /** The server's count over every row. `items` is one page of at most 200,
+   *  so counting it would call a long inbox read while rows past the page
+   *  were still unread. */
+  unreadTotal: number;
   actions: InboxActions;
 }) {
-  const unread = items.filter((item) => item.unseen);
   const read = items.filter((item) => !item.unseen);
 
   return (
@@ -33,14 +39,14 @@ export function InboxList({
       <div className="space-y-1 border-b border-border px-3 py-1.5">
         <div className="flex flex-wrap items-center gap-1">
           <span className="mr-1 text-xs text-muted-foreground">
-            {unread.length === 0 ? "All read" : `${String(unread.length)} unread`}
+            {unreadTotal === 0 ? "All read" : `${String(unreadTotal)} unread`}
           </span>
-          {unread.length > 0 ? (
+          {unreadTotal > 0 ? (
             <Button
               variant="ghost"
               size="sm"
               className="h-7 text-xs"
-              onClick={() => actions.markRead(unread.map((item) => item.key))}
+              onClick={actions.markAllRead}
             >
               Mark all read
             </Button>

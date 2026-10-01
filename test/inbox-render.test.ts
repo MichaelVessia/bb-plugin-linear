@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 import { InboxList, type InboxActions } from "../app/InboxList.js";
 import type { InboxItemView } from "../src/contract.js";
 
-const ACTIONS: InboxActions = { open: () => {}, markRead: () => {}, dismiss: () => {} };
+const ACTIONS: InboxActions = {
+  open: () => {},
+  markRead: () => {},
+  markAllRead: () => {},
+  dismiss: () => {},
+};
 
 function item(overrides: Partial<InboxItemView> = {}): InboxItemView {
   return {
@@ -21,8 +26,11 @@ function item(overrides: Partial<InboxItemView> = {}): InboxItemView {
   };
 }
 
-function render(items: InboxItemView[]): string {
-  return renderToStaticMarkup(createElement(InboxList, { items, actions: ACTIONS }));
+function render(
+  items: InboxItemView[],
+  unreadTotal = items.filter((entry) => entry.unseen).length,
+): string {
+  return renderToStaticMarkup(createElement(InboxList, { items, unreadTotal, actions: ACTIONS }));
 }
 
 /** The opening tag of the element whose accessible name starts with `name`. */
@@ -70,6 +78,20 @@ describe("the Inbox renders its actions", () => {
     expect(html).toContain(">Mark all read</button>");
     expect(html).toContain(">Dismiss 1 read</button>");
     expect(html.indexOf("Mark all read")).toBeLessThan(html.indexOf("<ul"));
+  });
+
+  it("counts unread past the 200-row page, so a long inbox never reads as all read", () => {
+    const page = Array.from({ length: 200 }, (_, index) => item({ key: `k${String(index)}` }));
+
+    const html = render(page, 201);
+    expect(html).toContain("201 unread");
+    expect(html).toContain(">Mark all read</button>");
+
+    const readPage = page.map((entry) => ({ ...entry, unseen: false }));
+    const tail = render(readPage, 1);
+    expect(tail).toContain("1 unread");
+    expect(tail).not.toContain("All read");
+    expect(tail).toContain(">Mark all read</button>");
   });
 
   it("keeps an accessible name on every icon when narrow widths hide the words", () => {

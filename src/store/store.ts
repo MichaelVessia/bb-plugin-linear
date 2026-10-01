@@ -323,6 +323,9 @@ export interface Store {
   putInbox(rows: readonly InboxRowRecord[]): void;
   inbox(options?: { includeDismissed?: boolean; limit?: number }): InboxRowRecord[];
   markInboxSeen(keys: readonly string[], at: number): void;
+  /** Every undismissed row, not only the page the Inbox shows. Returns how
+   *  many rows changed. */
+  markAllInboxSeen(at: number): number;
   dismissInbox(keys: readonly string[], at: number): void;
   unseenInboxCount(): number;
   pruneInbox(olderThan: number, limit: number): number;
@@ -1712,6 +1715,12 @@ export function createStore(db: Database): Store {
       db.prepare(
         `UPDATE inbox SET seen_at = ? WHERE seen_at IS NULL AND key IN (${placeholders(keys.length)})`,
       ).run(at, ...keys);
+    },
+
+    markAllInboxSeen(at) {
+      return db
+        .prepare(`UPDATE inbox SET seen_at = ? WHERE seen_at IS NULL AND dismissed_at IS NULL`)
+        .run(at).changes;
     },
 
     dismissInbox(keys, at) {

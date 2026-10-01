@@ -1091,9 +1091,10 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.boolean(), dismissed: z.number() }),
   },
 
-  /** Marks rows read in bb only. Linear's own read state is not changed. */
+  /** Marks rows read in bb only. Linear's own read state is not changed.
+   *  `all` reaches every undismissed row, past the page the Inbox shows. */
   markInboxRead: {
-    input: z.object({ keys: z.array(z.string()) }).strict(),
+    input: z.object({ keys: z.array(z.string()), all: z.boolean().optional() }).strict(),
     output: z.object({ ok: z.boolean(), marked: z.number() }),
   },
 

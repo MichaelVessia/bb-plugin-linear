@@ -457,6 +457,23 @@ describe("the inbox", () => {
     expect(openOf(row, null)).toEqual({ kind: "none" });
   });
 
+  it("marks every unread row read, past the page the Inbox shows", () => {
+    const store = createTestStore();
+    const rows = Array.from({ length: 201 }, (_, index) =>
+      toInboxRow(node({ id: `n_${String(index)}`, groupingKey: `g_${String(index)}` }), NOW, "ws"),
+    );
+    const dismissed = toInboxRow(node({ id: "n_x", groupingKey: "g_x" }), NOW, "ws");
+    store.putInbox([...rows, dismissed]);
+    store.dismissInbox([dismissed.key], NOW);
+    expect(store.unseenInboxCount()).toBe(201);
+
+    expect(store.markAllInboxSeen(NOW)).toBe(201);
+
+    expect(store.unseenInboxCount()).toBe(0);
+    expect(store.inbox({ includeDismissed: true, limit: 500 }).find((row) => row.key === dismissed.key)?.seenAt)
+      .toBeNull();
+  });
+
   it("marks only the named rows read, and keeps them listed", () => {
     const store = createTestStore();
     const first = toInboxRow(node(), NOW, "ws");

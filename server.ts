@@ -4223,10 +4223,11 @@ export function createPlugin(makeClient: LinearClientFactory = createLinearClien
         return { ok: true, dismissed: target.length };
       },
 
-      async markInboxRead({ keys }) {
-        store.markInboxSeen(keys, now());
+      async markInboxRead({ keys, all }) {
+        const marked = all === true ? store.markAllInboxSeen(now()) : keys.length;
+        if (all !== true) store.markInboxSeen(keys, now());
         publish("linear:inbox");
-        return { ok: true, marked: keys.length };
+        return { ok: true, marked };
       },
     });
 
